@@ -242,6 +242,7 @@ mod tests {
         format: 12,
         layout: Layout::Inboard,
         master_key_hex: None,
+        ..Default::default()
       },
     )
     .expect("encode");
@@ -278,6 +279,7 @@ mod tests {
         format: 13,
         layout: Layout::Inboard,
         master_key_hex: None,
+        ..Default::default()
       },
     )
     .expect("encode");
@@ -300,6 +302,7 @@ mod tests {
         format: 13,
         layout: Layout::Inboard,
         master_key_hex: Some(&hex),
+        ..Default::default()
       },
     )
     .expect("encode");
@@ -325,6 +328,7 @@ mod tests {
         format: 13,
         layout: Layout::Inboard,
         master_key_hex: Some(&hex),
+        ..Default::default()
       },
     )
     .expect("encode");
@@ -378,6 +382,7 @@ mod tests {
         format: 12,
         layout: Layout::Inboard,
         master_key_hex: None,
+        ..Default::default()
       },
     )
     .expect("encode");
@@ -417,6 +422,7 @@ mod tests {
         format: 12,
         layout: Layout::Inboard,
         master_key_hex: None,
+        ..Default::default()
       },
     )
     .expect("encode");
@@ -446,6 +452,7 @@ mod tests {
         format: 13,
         layout: Layout::Inboard,
         master_key_hex: Some(&hex),
+        ..Default::default()
       },
     )
     .expect("encode");

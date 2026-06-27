@@ -70,7 +70,7 @@ Lord uses **two independent schema version namespaces**:
 |-----------|----------|---------|
 | **Lord index schema** | heed3 `STATISTIC_TO_COUNT`, key `0` | Cardinal index layout version (currently **35**) |
 | **Lord wallet schema** | heed3 `STATISTIC_TO_COUNT`, key `0` in `wallets/<name>/` | Wallet metadata layout version (currently **2**) |
-| **Lord storage schema** | heed3 `STATISTIC_TO_COUNT`, key `0` in `storage/` | Commitment metadata layout version (currently **2**) |
+| **Lord storage schema** | heed3 `STATISTIC_TO_COUNT`, key `0` in `storage/` | Commitment metadata layout version (currently **3**) |
 | **lord-db `SCHEMA_VERSION`** | heed3 `metadata` database, key `schema_version` | Gates `LordEnv` named-database layouts and rkyv record migrations |
 
 These must not be conflated. Bumping `lord-db::SCHEMA_VERSION` rejects incompatible LMDB environments with an actionable error; it does **not** validate or migrate the cardinal index statistic at key `0`.
@@ -147,7 +147,8 @@ Carbonado blob storage, filepack manifests, and commitment metadata live in
 ```text
 lord storage encode <path> [--format 12|c12] [--layout inboard|outboard] [--master-key-hex HEX]
 lord storage verify <bao_root> [--sample-rate N] [--master-key-hex HEX]
-lord filepack create <dir> [--format 12|c12] [--layout inboard|outboard] [--master-key-hex HEX]
+lord filepack create <dir> [--format 12|c12] [--layout inboard|outboard] [--master-key-hex HEX] [--filepack-compat]
+lord-pack create <dir> [--format 12|c12] [--layout inboard|outboard] [--data-dir DIR] [--master-key-hex HEX] [--filepack-compat]
 ```
 
 `--format` accepts either numeric (`12`) or prefixed (`c12`) Carbonado format
@@ -158,7 +159,7 @@ numbers (c0..c15).
 | Layer | Path | Backend |
 |-------|------|---------|
 | Blobs | `{data_dir}/carbonado/{bao_root_hex}.c{NN}` | Carbonado v2 files |
-| Filepack | `{data_dir}/filepack/{fingerprint}/manifest.filepack` | JSON manifest |
+| Filepack | `{data_dir}/filepack/{fingerprint}/` | `manifest.filepack` (JSON legacy or Casey CBOR) + `lord.carbonado.cbor` sidecar in compat mode |
 | Commitment metadata | `{data_dir}/storage/` | heed3 LMDB env via `StorageStore` |
 
 Mainnet uses `{data_dir}/carbonado` etc. at the data-dir root; other chains use
@@ -171,7 +172,7 @@ index and wallet stores. It holds:
 
 | Database | Key | Value | Notes |
 |----------|-----|-------|-------|
-| `STATISTIC_TO_COUNT` | `u64` BE | `u64` BE | Storage schema version at key `0` (currently **2**) |
+| `STATISTIC_TO_COUNT` | `u64` BE | `u64` BE | Storage schema version at key `0` (currently **3**) |
 | `COMMITMENT_META` | `bao_root` (32 bytes) | `CommitmentMeta` (rkyv) | Metadata pointers only |
 | `COMMITMENT_ORDER` | `ots_order_key` (bytes) | `bao_root` (32 bytes) | Sorted explorer/CLI list index |
 
@@ -200,12 +201,22 @@ atomically (temp + rename after LMDB commit).
 | `created_at` | `u64` | Unix timestamp |
 | `ots_proof_path` | `Option<String>` | Relative path under `{data_dir}/ots/` (PR3) |
 | `ots_order_key` | `Option<Vec<u8>>` | BFS OTS merkle order key (PR3) |
+| `timestamped_at` | `Option<u64>` | Unix timestamp when OTS proof was written (PR3 schema v3) |
 
 `filepack_fp` records **at most one** filepack membership per commitment. If a
 file already belongs to one filepack and is included in another, the field is
 overwritten with the latest fingerprint (last filepack create wins).
 
-### Filepack manifest (version 1, JSON)
+### Filepack manifests (two-layer model)
+
+Lord composes two layers:
+
+1. **Carbonado layer** — blobs under `{data_dir}/carbonado/`, `CommitmentMeta` in LMDB,
+   `filepack_fp` updated on create.
+2. **Casey filepack layer** — standard CBOR `manifest.filepack` when `--filepack-compat`
+   is set (or via `lord-pack create --filepack-compat`).
+
+#### Legacy JSON manifest (default, version 1)
 
 Written to `manifest.filepack`:
 
@@ -222,6 +233,30 @@ Written to `manifest.filepack`:
 
 `fingerprint` is a BLAKE3 hex digest over sorted entry `(path, size, bao_root, format)`
 tuples. Each entry carries its own per-file Bao root from Carbonado encode.
+
+#### Casey-compatible CBOR manifest (`--filepack-compat`, version 2)
+
+Written to `{fingerprint}/manifest.filepack` as **stock** Casey CBOR (not JSON).
+The archive has the same top-level CBOR fields as upstream filepack (`version`,
+`root`, `files`). Casey’s logical `embedded` map is derived at unpack time from
+package-tree file entries whose payloads are inlined in `files`; Lord does not add
+extra blobs to `files`, so upstream `filepack verify` works on the source directory.
+
+- **`package` tree** — raw BLAKE3 hashes and sizes of **source files** (verified
+  by stock `filepack verify` against the original directory).
+- **`signatures`** — empty signatures directory (Casey format requirement).
+- **`lord.carbonado.cbor`** — separate file in the same `{fingerprint}/` directory
+  (not inside the Casey archive). CBOR map:
+
+  `path → { bao_root, format, carbonado_path }`
+
+  binding each source path to its Carbonado commitment. Read by Lord tooling only.
+
+- **`fingerprint`** — Casey `package1…` bech32m fingerprint (hash of the package
+  directory entry). Stored in LMDB `filepack_fp` and used as the on-disk directory name.
+
+The CLI still prints a JSON descriptor (`version: 2`, `package1…` fingerprint,
+`entries` with per-file Bao roots) for scripting either format.
 
 ### Master key (PR2 minimal)
 
@@ -250,8 +285,20 @@ tuples. Each entry carries its own per-file Bao root from Carbonado encode.
    for PR2).
 
 Encode publishes carbonado blobs **before** LMDB metadata commit. Filepack
-commits `filepack_fp` LMDB updates **before** manifest rename (rolls back LMDB
-on rename failure).
+commits `filepack_fp` LMDB updates **before** on-disk publish (rolls back LMDB
+on any publish failure).
+
+Legacy JSON mode publishes `manifest.filepack` in one rename after LMDB commit.
+
+Compat mode (`--filepack-compat`) uses a two-step publish after LMDB commit:
+
+1. Rename `lord.carbonado.cbor` from its temp file (Carbonado bindings sidecar).
+2. Rename `manifest.filepack` last — the manifest is the **ready** marker; consumers
+   may assume that when `manifest.filepack` exists, the sidecar is already present.
+
+On sidecar rename failure: LMDB rollback, sidecar temp removed, manifest temp
+removed (manifest not published). On manifest rename failure: LMDB rollback,
+published sidecar removed, manifest temp removed.
 
 ### c-format parity
 
@@ -281,41 +328,81 @@ routes live in `crates/lord-commit` and are wired into the `lord` binary.
 ### CLI
 
 ```text
-lord commit timestamp <bao_root> [--dry-run] [--calendar-url URL]
+lord commit timestamp <bao_root> [--dry-run] [--force] [--calendar-url URL]
 lord commit verify <bao_root>
 lord commit list
 ```
 
 `lord commit timestamp` requires an existing `CommitmentMeta` from
 `lord storage encode`. `--dry-run` builds a local stub OTS proof for tests
-without contacting a calendar server.
+without contacting a calendar server. Re-timestamping an already-timestamped
+commitment fails unless `--force` is passed; `--force` deletes the previous
+`COMMITMENT_ORDER` key in the same LMDB transaction before inserting the new one.
+
+**Atomic timestamp flow:** pending OTS write → LMDB txn (delete stale order key if
+re-timestamping, `put_commitment`, `put_commitment_order`) → breccia append →
+publish OTS (`atomic_write` to final path). If breccia or publish fails after LMDB
+commit, LMDB changes are rolled back and the pending OTS file is removed without
+touching any previously published proof. If LMDB already records a timestamp but
+breccia is missing the entry, retry appends breccia without `--force`.
+
+`lord commit verify` performs a **binding check** only: the proof must parse as
+SHA256 and its `start_digest` must equal `SHA256(bao_root)`. Full Bitcoin
+attestation verification is deferred.
+
+`lord commit list` and `/commitments` list **timestamped commitments only**
+(entries in `COMMITMENT_ORDER`). Encoded-but-not-timestamped roots appear on
+`/commitment/{bao_root}` but not in the sorted list.
 
 ### On-disk layout (additions)
 
 | Layer | Path | Backend |
 |-------|------|---------|
 | OTS proofs | `{data_dir}/ots/{bao_root_hex}.ots` | Detached OTS proof files (not in LMDB) |
-| Breccia log | `{data_dir}/breccia/global.breccia` | Append-only bincode `CommitmentEntry` blobs |
+| Breccia log | `{data_dir}/breccia/global.breccia` | Append-only `LORBRECC` length-prefixed bincode blobs |
 
-### `storage/` schema version 2
+**Breccia format (PR3):** `global.breccia` uses a lord-specific append log with
+`LORBRECC` magic and length-prefixed bincode `CommitmentEntry` records. This is
+**not** [Peter Todd's breccia](https://github.com/petertodd/python-breccia)
+mark-word database; a future phase may migrate to or interoperate with that
+format for global replication.
 
-Opening a schema **1** database migrates in place: each `CommitmentMetaV1` record
-is rewritten with `ots_proof_path` and `ots_order_key` set to `None`, then the
-storage statistic at key `0` is bumped to **2**. Schema **0** or versions newer
-than **2** are rejected.
+### `storage/` schema version 3
+
+Migrations chain in place on open:
+
+1. **v1 → v2:** each `CommitmentMetaV1` record gains `ots_proof_path` and
+   `ots_order_key` set to `None`; statistic bumped to **2**.
+2. **v2 → v3:** each `CommitmentMetaV2` record gains `timestamped_at`; for
+   already-timestamped rows (`ots_order_key` present) the value is taken from the
+   matching breccia entry when available, otherwise `created_at`; statistic bumped
+   to **3**.
+
+Schema **0** or versions newer than **3** are rejected.
 
 `COMMITMENT_ORDER` maps `ots_order_key` bytes → `bao_root` for sorted
 `lord commit list` and `/commitments` explorer pages.
 
-### OTS order key (BFS left-to-right)
+### OTS order key (BFS left-to-right, PR3 minimal)
 
-Canonical order is derived from the OpenTimestamps proof tree:
+PR3 implements the **BFS index** half of the design-doc ordering rule. The order
+key is the big-endian `u64` breadth-first index of the first `Attestation` leaf
+when the OTS proof tree is traversed left-to-right, breadth-first. Proofs with
+no attestation leaf use `u64::MAX` as a sentinel (sorts last). The full
+**merkle path** (per-fork left/right branch indices) described in
+`design.md` is deferred to a later phase; PR3 keys are comparable and
+deterministic for stub and calendar proofs but do not encode branch paths.
 
 1. Model each `Fork` as an ordered list of child subtrees (left-to-right).
 2. Breadth-first traverse: root, then level 1 left-to-right, then level 2, …
-3. Find the first `Attestation` leaf; its BFS index becomes the order key
-   (big-endian `u64` bytes).
+3. Find the first `Attestation` leaf; its BFS index becomes the order key.
 4. Compare commitments by lexicographic order on those bytes.
+
+`COMMITMENT_ORDER` rejects duplicate order keys mapping to different `bao_root`
+values (collision detection).
+
+Calendar HTTP uses 10s connect and 30s request timeouts. Breccia read/append
+caps each blob at `MAX_BRECCIA_BLOB_LEN` (1 MiB).
 
 Stub proofs built by `--dry-run` use a deterministic fork layout keyed off the
 `bao_root` so integration tests get stable ordering without calendar network
@@ -338,7 +425,7 @@ Bincode-serialized struct appended to `global.breccia`:
 |-------|----------|
 | `/commitment/{bao_root}` | HTML commitment detail (metadata, OTS status, links) |
 | `/commitments`, `/commitments/{page}` | Paginated list ordered by `ots_order_key` |
-| `/content/{bao_root}` | Stream public carbonado bytes (403 for private; PR3 minimal) |
+| `/content/{bao_root}` | Serve raw carbonado file bytes for public formats (403 for private; 32 MiB max; PR3 minimal — Bao streaming decode deferred) |
 | `/r/commitment/{bao_root}`, `/r/commitments`, `/r/commitments/{page}` | JSON API when enabled |
 
 `fallback` / `search`: 64-hex `bao_root` queries that match a stored commitment

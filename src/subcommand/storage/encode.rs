@@ -57,6 +57,7 @@ impl Encode {
         format: self.format.0,
         layout: self.layout.into(),
         master_key_hex,
+        ..Default::default()
       },
     )?;
     Ok(Some(Box::new(result)))

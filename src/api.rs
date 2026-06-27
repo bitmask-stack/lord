@@ -144,6 +144,7 @@ pub struct CommitmentInfo {
   pub created_at: u64,
   pub ots_proof_path: Option<String>,
   pub ots_order_key: Option<String>,
+  pub timestamped_at: Option<u64>,
   pub timestamped: bool,
 }
 
@@ -153,6 +154,7 @@ pub struct CommitmentListItem {
   pub ots_order_key: String,
   pub carbonado_path: String,
   pub format: u8,
+  pub timestamped_at: Option<u64>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]

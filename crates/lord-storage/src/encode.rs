@@ -18,6 +18,8 @@ pub struct EncodeOptions<'a> {
   pub format: u8,
   pub layout: Layout,
   pub master_key_hex: Option<&'a str>,
+  /// Pre-read plaintext. When set, the file at `input_path` is not read again.
+  pub plaintext: Option<Vec<u8>>,
 }
 
 impl Default for EncodeOptions<'_> {
@@ -26,6 +28,7 @@ impl Default for EncodeOptions<'_> {
       format: 12,
       layout: Layout::Inboard,
       master_key_hex: None,
+      plaintext: None,
     }
   }
 }
@@ -54,7 +57,7 @@ pub fn encode_file_with_store(
   store: &StorageStore,
   data_dir: impl AsRef<Path>,
   input_path: impl AsRef<Path>,
-  options: EncodeOptions<'_>,
+  mut options: EncodeOptions<'_>,
 ) -> Result<EncodeResult> {
   if options.format > 15 {
     bail!(
@@ -65,8 +68,11 @@ pub fn encode_file_with_store(
 
   let paths = StoragePaths::new(data_dir.as_ref());
   let input_path = input_path.as_ref();
-  let plaintext = std::fs::read(input_path)
-    .with_context(|| format!("failed to read `{}`", input_path.display()))?;
+  let plaintext = match options.plaintext.take() {
+    Some(bytes) => bytes,
+    None => std::fs::read(input_path)
+      .with_context(|| format!("failed to read `{}`", input_path.display()))?,
+  };
 
   let master_key = master_key_for_format(
     options.format,
@@ -193,6 +199,7 @@ mod tests {
         format: 12,
         layout: Layout::Inboard,
         master_key_hex: None,
+        ..Default::default()
       },
     )
     .expect("encode");
@@ -230,6 +237,7 @@ mod tests {
         format: 12,
         layout: Layout::Inboard,
         master_key_hex: None,
+        ..Default::default()
       },
     )
     .expect("encode");
@@ -255,6 +263,7 @@ mod tests {
         format: 12,
         layout: Layout::Outboard,
         master_key_hex: None,
+        ..Default::default()
       },
     )
     .expect("encode");
@@ -283,6 +292,7 @@ mod tests {
         format: 13,
         layout: Layout::Inboard,
         master_key_hex: None,
+        ..Default::default()
       },
     )
     .expect("encode");

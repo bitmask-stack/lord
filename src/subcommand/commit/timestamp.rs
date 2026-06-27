@@ -10,6 +10,8 @@ pub(crate) struct Timestamp {
     help = "Build a local stub OTS proof instead of contacting a calendar server"
   )]
   pub(crate) dry_run: bool,
+  #[arg(long, help = "Re-timestamp a commitment that already has an OTS proof")]
+  pub(crate) force: bool,
   #[arg(
     long,
     default_value = lord_commit::DEFAULT_CALENDAR_URL,
@@ -25,6 +27,7 @@ impl Timestamp {
       &self.bao_root,
       TimestampOptions {
         dry_run: self.dry_run,
+        force: self.force,
         calendar_url: self.calendar_url,
       },
     )?;

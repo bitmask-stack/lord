@@ -10,6 +10,7 @@ pub(crate) struct CommitmentHtml {
   pub(crate) created_at: u64,
   pub(crate) ots_proof_path: Option<String>,
   pub(crate) ots_order_key: Option<String>,
+  pub(crate) timestamped_at: Option<u64>,
   pub(crate) timestamped: bool,
 }
 
@@ -28,6 +29,9 @@ impl Display for CommitmentHtml {
     writeln!(f, "<dt>created at</dt><dd>{}</dd>", self.created_at)?;
     if self.timestamped {
       writeln!(f, "<dt>OTS</dt><dd>timestamped</dd>")?;
+      if let Some(ts) = self.timestamped_at {
+        writeln!(f, "<dt>timestamped at</dt><dd>{ts}</dd>")?;
+      }
       if let Some(key) = &self.ots_order_key {
         writeln!(f, "<dt>order key</dt><dd>{key}</dd>")?;
       }
@@ -64,6 +68,7 @@ pub(crate) struct CommitmentListItem {
   pub(crate) ots_order_key: String,
   pub(crate) carbonado_path: String,
   pub(crate) format: u8,
+  pub(crate) timestamped_at: Option<u64>,
 }
 
 impl Display for CommitmentsHtml {

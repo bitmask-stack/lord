@@ -2733,17 +2733,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "lord-pack"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "lord-storage",
+ "serde_json",
+]
+
+[[package]]
 name = "lord-storage"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "bao-tree",
+ "bech32",
+ "bincode",
  "blake3",
  "carbonado",
  "getrandom 0.2.17",
  "heed3",
  "hex",
  "lord-db",
+ "minicbor",
  "rand",
  "rkyv",
  "serde",

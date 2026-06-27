@@ -72,6 +72,7 @@ mod info;
 mod json_api;
 #[cfg(feature = "sats")]
 mod list;
+mod lord_pack;
 mod no_redb;
 #[cfg(feature = "sats")]
 mod parse;

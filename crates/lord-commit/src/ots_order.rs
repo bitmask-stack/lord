@@ -58,6 +58,7 @@ pub fn order_key_from_timestamp(first_step: &Step) -> OtsOrderKey {
     }
     bfs_index += 1;
   }
+  // No attestation leaf found; sentinel sorts last.
   OtsOrderKey(encode_bfs_index(u64::MAX))
 }
 
@@ -119,6 +120,17 @@ mod tests {
     let fork = fork_step(vec![right, left]);
     let right_key = order_key_from_timestamp(&fork);
     assert_eq!(right_key, OtsOrderKey(encode_bfs_index(1)));
+  }
+
+  #[test]
+  fn no_attestation_yields_max_sentinel_key() {
+    let op_only = Step {
+      data: StepData::Op(opentimestamps::op::Op::Sha256),
+      output: vec![0u8; 32],
+      next: vec![],
+    };
+    let key = order_key_from_timestamp(&op_only);
+    assert_eq!(key, OtsOrderKey(encode_bfs_index(u64::MAX)));
   }
 
   #[test]

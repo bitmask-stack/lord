@@ -12,6 +12,9 @@ const MAGIC: &[u8] = b"LORBRECC";
 const HEADER_VERSION: u32 = 1;
 const HEADER_LEN: u64 = (MAGIC.len() + 4) as u64;
 
+/// Maximum serialized blob length accepted on read or append.
+pub const MAX_BRECCIA_BLOB_LEN: usize = 1 << 20;
+
 /// Append-only breccia log at `{data_dir}/breccia/global.breccia`.
 pub struct BrecciaLog {
   path: std::path::PathBuf,
@@ -95,6 +98,13 @@ impl BrecciaLogMut {
   }
 
   pub fn append_blob(&mut self, blob: &[u8]) -> Result<u64> {
+    if blob.len() > MAX_BRECCIA_BLOB_LEN {
+      anyhow::bail!(
+        "breccia blob length {} exceeds maximum {}",
+        blob.len(),
+        MAX_BRECCIA_BLOB_LEN
+      );
+    }
     let offset = self.file.seek(SeekFrom::End(0))?;
     let len = blob.len() as u64;
     self.file.write_all(&len.to_le_bytes())?;
@@ -114,6 +124,13 @@ impl BrecciaLogMut {
         Err(err) => return Err(err.into()),
       }
       let len = u64::from_le_bytes(len_buf) as usize;
+      if len > MAX_BRECCIA_BLOB_LEN {
+        anyhow::bail!(
+          "breccia blob length {} exceeds maximum {}",
+          len,
+          MAX_BRECCIA_BLOB_LEN
+        );
+      }
       let mut blob = vec![0u8; len];
       self.file.read_exact(&mut blob)?;
       blobs.push(blob);

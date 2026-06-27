@@ -93,6 +93,71 @@ fn storage_encode_missing_file_fails() {
 }
 
 #[test]
+fn filepack_create_compat_writes_cbor_manifest_and_updates_metadata() {
+  let tempdir = Arc::new(TempDir::new().expect("tempdir"));
+
+  let manifest =
+    CommandBuilder::new("--regtest filepack create bundle --format c12 --filepack-compat")
+      .temp_dir(tempdir.clone())
+      .write("bundle/one.txt", b"one")
+      .write("bundle/nested/two.txt", b"two")
+      .stdout_regex(".*")
+      .run_and_deserialize_output::<lord_storage::FilepackManifest>();
+
+  assert_eq!(manifest.version, 2);
+  assert!(manifest.fingerprint.starts_with("package1"));
+  assert_eq!(manifest.entries.len(), 2);
+
+  let data_dir = tempdir.path().join("regtest");
+  let manifest_path = data_dir
+    .join("filepack")
+    .join(&manifest.fingerprint)
+    .join("manifest.filepack");
+  assert!(manifest_path.exists());
+
+  let bytes = std::fs::read(&manifest_path).expect("read manifest");
+  assert_ne!(bytes.first().copied(), Some(b'{'));
+
+  let package_files = lord_storage::verify_casey_archive(&bytes).expect("casey verify");
+  assert_eq!(package_files.len(), 2);
+  assert_eq!(
+    package_files
+      .iter()
+      .find(|file| file.path == "one.txt")
+      .expect("one.txt")
+      .hash,
+    lord_storage::FilepackHash::hash_content(b"one")
+  );
+
+  let filepack_root = data_dir.join("filepack").join(&manifest.fingerprint);
+  let sidecar = lord_storage::read_carbonado_sidecar(&filepack_root).expect("sidecar");
+  let bindings = lord_storage::decode_carbonado_sidecar(&sidecar).expect("decode");
+  assert_eq!(bindings.len(), 2);
+  assert!(bindings.contains_key("one.txt"));
+  assert!(bindings.contains_key("nested/two.txt"));
+  assert!(filepack_root.join("lord.carbonado.cbor").exists());
+
+  let store = StorageStore::open(&data_dir).expect("open");
+  let rtxn = store.begin_read().expect("read");
+  for entry in &manifest.entries {
+    let root = hex::decode(&entry.bao_root).expect("hex");
+    let root: [u8; 32] = root.try_into().expect("root");
+    let meta: CommitmentMeta = store
+      .get_commitment(&rtxn, &root)
+      .expect("get")
+      .expect("meta");
+    assert_eq!(
+      meta.filepack_fp.as_deref(),
+      Some(manifest.fingerprint.as_str())
+    );
+    assert_eq!(
+      bindings.get(&entry.path).expect("binding").bao_root,
+      entry.bao_root
+    );
+  }
+}
+
+#[test]
 fn filepack_create_empty_directory_fails() {
   let tempdir = Arc::new(TempDir::new().expect("tempdir"));
   std::fs::create_dir(tempdir.path().join("empty")).expect("mkdir");

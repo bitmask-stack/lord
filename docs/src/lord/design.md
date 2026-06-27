@@ -137,16 +137,34 @@ Metadata: Filepack
 
 Lord uses **filepack**, Casey Rodarmor's metadata archival format, to bundle metadata alongside stored content.
 
+### Two-layer composition
+
+1. **Carbonado layer** — encoded blobs, `CommitmentMeta` in LMDB, per-file Bao roots.
+2. **Casey filepack layer** — stock CBOR `manifest.filepack` (with `--filepack-compat`)
+   whose `package` tree lists source files by raw BLAKE3 hash so upstream `filepack
+   verify` works on the original directory.
+
+Lord binds the layers via a **separate sidecar file** alongside the manifest,
+`{fingerprint}/lord.carbonado.cbor` (not inside the Casey archive `files` map):
+
+```text
+path → { bao_root, format, carbonado_path }
+```
+
 ### Properties
 
 - Structured, archivable metadata container
-- **Each file** in a filepack archive has **its own Bao hash**
+- **Each file** carries Carbonado binding metadata in the Lord sidecar; the Casey
+  `package` tree uses source-file BLAKE3 hashes for third-party verification
 - Enables fine-grained content addressing within a single archive
 - Composes with Carbonado storage and OTS timestamping
+- Casey `package1…` bech32m fingerprint when compat mode is enabled
 
 ### Role in the system
 
-Filepack is the canonical metadata layer. Carbonado holds the encoded payload; filepack describes what is stored, how it relates to commitments, and carries per-file integrity hashes.
+Filepack is the canonical metadata layer for third-party verification. Carbonado holds
+the encoded payload; the Lord sidecar records how source paths map to Carbonado
+commitments.
 
 Timestamping and Canonical Ordering
 ---------------------------------
@@ -178,7 +196,12 @@ Breadth-first, left-to-right traversal example:
 Traversal order: root → A → B → C → D → E → F
 ```
 
-Two commitments are ordered by comparing their positions in this traversal of the OTS merkle structure. Exact tie-breaking and cross-calendar aggregation rules are TBD.
+Two commitments are ordered by comparing their positions in this traversal of the OTS merkle structure.
+
+**PR3 scope (implemented):** order keys use the big-endian BFS index of the
+first attestation leaf only. Proofs without an attestation use `u64::MAX` as a
+sentinel. The full merkle path (per-fork branch indices along the path to the
+attestation) and cross-calendar aggregation rules remain TBD for a later phase.
 
 ### Why this ordering
 
@@ -189,7 +212,14 @@ Two commitments are ordered by comparing their positions in this traversal of th
 Global Index: Breccia
 ---------------------
 
-Lord uses **breccia**, Peter Todd's database, to track **all committed data globally**.
+Lord uses a **breccia** append log to track committed data. The long-term target
+is [Peter Todd's breccia](https://github.com/petertodd/python-breccia) mark-word
+database for global replication and coordination.
+
+**PR3 (implemented):** `{data_dir}/breccia/global.breccia` is a lord-specific
+append log (`LORBRECC` magic + length-prefixed bincode `CommitmentEntry` blobs).
+It is **not** the Peter Todd breccia format; migration or federation with that
+format is planned for a later phase.
 
 ### Role
 

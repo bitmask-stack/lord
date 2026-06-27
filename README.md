@@ -1,420 +1,187 @@
 <h1 align=center><code>lord</code></h1>
 
-**Lord** is a fork of [ord](https://github.com/ordinals/ord) focused on Bitcoin
-wallet and block-explorer tooling. It preserves the CLI shape, HTTP API, and
-Bitcoin Core integration operators expect from ord, while removing inscription
-and rune functionality entirely.
+<p align=center>
+  <strong>Bitcoin wallet, block explorer, and content-addressed storage — forked from <a href="https://github.com/ordinals/ord">ord</a>, without inscriptions or runes.</strong>
+</p>
 
-### Storage
+<p align=center>
+  <a href="https://github.com/bitmask-stack/lord/actions"><img src="https://img.shields.io/github/actions/workflow/status/bitmask-stack/lord/ci.yaml?branch=lord" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-CC0--1.0-blue" alt="License"></a>
+</p>
 
-Lord persists data with **heed3 LMDB** environments via the in-repo
-[`lord-db`](crates/lord-db) crate (heed3 + rkyv):
+---
 
-| Store | Path | Purpose |
-|-------|------|---------|
-| **Cardinal index** | `{data_dir}/index/` (mainnet) or `{data_dir}/{chain}/index/` | Block headers, UTXOs, optional sat/address indexes |
-| **Wallet metadata** | `{data_dir}/wallets/<name>/` | Per-wallet LMDB env (schema version 2) |
-| **Carbonado blobs** | `{data_dir}/carbonado/` | Encoded content-addressed files (`{bao_root}.c{NN}`) |
-| **Filepack** | `{data_dir}/filepack/{fingerprint}/` | Directory manifests with per-file Bao roots |
-| **Commitment metadata** | `{data_dir}/storage/` | heed3 LMDB pointers only (schema version 2) |
-| **OTS proofs** | `{data_dir}/ots/` | Detached `.ots` files per commitment |
-| **Breccia log** | `{data_dir}/breccia/global.breccia` | Append-only commitment history |
+## What Lord is
 
-There is **no migration** from legacy `index.redb` or `wallets/<name>.redb`
-files. Delete legacy redb files and re-index or recreate wallets. See
-[implementation notes](docs/src/lord/implementation.md).
+**Lord** keeps what operators rely on from ord — CLI shape, HTTP explorer API, Bitcoin Core wallet integration, cardinal indexing — and **removes inscription and rune functionality entirely**.
 
-### Scope today
+In their place, Lord is building a **content-addressed commitment stack**: durable encoded blobs ([Carbonado v2](https://github.com/bitmask-stack/carbonado)), proofs of possession ([Bao](https://github.com/oconnor663/bao)), directory manifests ([filepack](https://github.com/casey/filepack)), OpenTimestamps ordering, and a global append log (breccia). Later phases add a **storage market**, **mutual-aid replication**, an embedded **LDK Lightning** node, and **RGB** tokens (replacing runes).
 
-- **Wallet:** create, restore, send, balance, addresses, outputs, and related commands
-- **Explorer:** blocks, transactions, outputs, addresses, search, status
-- **Not included:** inscriptions, runes, ordinal-theory collection features
-- **Ord HTTP compatibility:** removed inscription/rune routes return **410 Gone**
-  (not silent 404); cardinal explorer routes unchanged
-- **Sat explorer (optional):** build with `--features sats` and run with
-  `--index-sats` for `/sat/:sat` and related commands
+| ord concept | Lord replacement |
+|-------------|------------------|
+| On-chain inscriptions | Carbonado blobs + OTS commitments + breccia index |
+| Runes | RGB (planned) |
+| Sat ordinal ordering | OTS merkle-path + breadth-first commitment order |
 
-**Storage commands** (Carbonado + filepack):
+**[Design document](docs/src/lord/design.md)** — full specification and roadmap.  
+**[Implementation notes](docs/src/lord/implementation.md)** — what is shipped today, schemas, and CLI details.
+
+---
+
+## Key decisions (read this first)
+
+These are intentional — not oversights:
+
+1. **No ordinal theory for data ordering.** Canonical commitment order comes from the **OpenTimestamps proof merkle path** and **breadth-first, left-to-right** position in the OTS tree — not sat numbering or rarity.
+
+2. **Clean break from redb.** Index, wallet, and storage metadata use **heed3 LMDB + rkyv**. Legacy `index.redb` and `wallets/<name>.redb` are **not migrated**; delete them and re-index or recreate wallets.
+
+3. **Blobs on disk, pointers in LMDB.** Carbonado files live under `carbonado/`; `storage/` holds **metadata only** (bao root, paths, OTS keys). No blob bytes in the database.
+
+4. **Master keys are random files, not passphrases.** Encrypted (odd) Carbonado formats use `{data_dir}/storage/master.key` (32 random bytes, mode `0600`). **Argon2id is not built into Lord or Carbonado** — derive a 32-byte key outside the library if you only have a passphrase.
+
+5. **Ord HTTP compatibility for removed features.** Inscription and rune routes return **410 Gone** (explicit removal), not silent 404. Cardinal explorer routes are unchanged.
+
+6. **Two-layer filepack.** Default manifests are Lord JSON v1 with per-file Bao roots. `--filepack-compat` adds a **stock Casey CBOR** `manifest.filepack` (raw BLAKE3 of source files, verifiable with `filepack verify`) plus a separate **`lord.carbonado.cbor`** sidecar mapping paths to Carbonado addresses.
+
+7. **Lord breccia ≠ Peter Todd breccia.** The global log uses Lord's `LORBRECC` append format at `breccia/global.breccia`, not the upstream breccia library.
+
+8. **Carbonado v2 only.** Symmetric AES-256-CTR + HMAC-SHA512 EtM. **No decode path for legacy v1 ECIES** archives — re-encode externally if needed.
+
+---
+
+## Status
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| PR0 | `lord-db`, ord→lord rename | Done |
+| PR1 | Remove inscriptions/runes; index+wallet heed3; slim server; `sats` feature | Done |
+| PR2 | Carbonado encode/verify, filepack, `storage/` metadata | Done |
+| PR3 | OTS timestamp/verify/list, breccia log, commitment explorer | Done |
+| PR4 | LDK Lightning | Planned |
+| PR5 | Iroh P2P / storage market | Planned |
+| PR6 | RGB stub | Planned |
+
+**Shipped today:** wallet, cardinal explorer, Carbonado storage CLI, filepack create, OTS commitment workflow, `/commitment/*` and `/content/*` routes.
+
+**Not shipped:** storage market, Lightning, RGB, full OTS Bitcoin attestation verify (PR3 checks digest binding), Bao streaming decode on `/content` (serves raw carbonado bytes).
+
+---
+
+## Quick start
+
+### Build
 
 ```sh
-lord storage encode <file> --format c12 --layout inboard
+git clone https://github.com/bitmask-stack/lord.git
+cd lord
+cargo build --release
+# binaries: ./target/release/lord  ./target/release/lord-pack
+```
+
+Requires Rust ≥ 1.89 (`rust-version` in `Cargo.toml`). On Debian/Ubuntu: `sudo apt-get install pkg-config libssl-dev build-essential`.
+
+Optional sat explorer: `cargo build --release --features sats` and run with `--index-sats`.
+
+### Run
+
+Lord needs a synced `bitcoind` with `-txindex`. Same RPC/cookie conventions as ord — see `lord --help`.
+
+```sh
+lord server                                    # HTTP explorer
+lord wallet create                             # wallet (Bitcoin Core-backed)
+lord --regtest server                          # regtest chain
+```
+
+### Storage & commitments
+
+```sh
+# Encode a file to Carbonado (default public format c12)
+lord storage encode myfile.txt --format c12
+
+# Verify possession (header MAC + sampled Bao slices)
 lord storage verify <bao_root_hex> --sample-rate 8
-lord filepack create <dir> --format c12
-lord commit timestamp <bao_root_hex> --dry-run
+
+# Directory → per-file Carbonado + manifest
+lord filepack create ./bundle --format c12
+
+# Casey-compatible CBOR manifest + carbonado sidecar
+lord filepack create ./bundle --format c12 --filepack-compat
+
+# Standalone helper (no full lord wallet/index required)
+lord-pack create ./bundle --format c12 --chain regtest --data-dir ~/.local/share/ord/regtest --filepack-compat
+
+# OpenTimestamps
+lord commit timestamp <bao_root_hex>
 lord commit verify <bao_root_hex>
 lord commit list
 ```
 
-`--format` accepts `12` or `c12` (c0..c15).
+`--format` accepts `12` or `c12` (c0..c15). Odd formats encrypt with `master.key`; even formats are public.
 
-**Explorer commitment routes:** `/commitment/{bao_root}`, `/commitments`,
-`/content/{bao_root}` (public formats). JSON mirrors under `/r/commitment/*` and
-`/r/commitments/*` when the JSON API is enabled.
-
-Future phases add the storage market and Lightning integration described in the
-[Lord Design Document](docs/src/lord/design.md).
+Explorer: `/commitment/{bao_root}`, `/commitments`, `/content/{bao_root}` (+ JSON under `/r/` when enabled).
 
 ---
 
-<h2 align=center>Upstream: <code>ord</code></h2>
+## Data directory
 
-<div align=center>
-  <a href=https://crates.io/crates/ord>
-    <img src=https://img.shields.io/crates/v/ord.svg alt="crates.io version">
-  </a>
-  <a href=https://github.com/ordinals/ord/actions/workflows/ci.yaml>
-    <img src=https://github.com/ordinals/ord/actions/workflows/ci.yaml/badge.svg alt="build status">
-  </a>
-  <a href=https://github.com/ordinals/ord/releases>
-    <img src=https://img.shields.io/github/downloads/ordinals/ord/total.svg alt=downloads>
-  </a>
-  <a href=https://discord.gg/ordinals>
-    <img src=https://img.shields.io/discord/987504378242007100?logo=discord alt="chat on discord">
-  </a>
-</div>
-<br>
+Mainnet uses `{data_dir}/` at the root; other chains nest under `{data_dir}/{chain}/`.
 
-`ord` is an index, block explorer, and command-line wallet. It is experimental
-software with no warranty. See [LICENSE](LICENSE) for more details.
+| Path | Purpose |
+|------|---------|
+| `index/` | Cardinal block index (heed3, schema **35**) |
+| `wallets/<name>/` | Per-wallet LMDB (schema **2**) |
+| `carbonado/` | Carbonado blobs `{bao_root_hex}.c{NN}` |
+| `filepack/{fingerprint}/` | `manifest.filepack` + optional `lord.carbonado.cbor` |
+| `storage/` | Commitment metadata LMDB (schema **3**), `master.key` |
+| `ots/` | Detached `.ots` proofs |
+| `breccia/global.breccia` | Global commitment append log |
 
-Ordinal theory imbues satoshis with numismatic value, allowing them to
-be collected and traded as curios.
+Example config: [`lord.yaml`](lord.yaml).
 
-Ordinal numbers are serial numbers for satoshis, assigned in the order in which
-they are mined, and preserved across transactions.
+---
 
-See [the docs](https://docs.ordinals.com) for documentation and guides.
+## Scope today
 
-See [the BIP](bip.mediawiki) for a technical description of the assignment and
-transfer algorithm.
+**Included:** wallet commands, block/tx/output/address explorer, search, status, Carbonado storage, filepack, OTS commitments, commitment explorer pages.
 
-See [the project board](https://github.com/orgs/ordinals/projects/1) for
-currently prioritized issues.
+**Removed:** inscriptions, runes, ordinal collection features, inscription/rune HTTP routes (410 Gone).
 
-Join [the Discord server](https://discord.gg/87cjuz4FYg) to chat with fellow
-ordinal degenerates.
+**Optional:** `--features sats` + `--index-sats` for `/sat/:sat` and sat-aware indexing.
 
-Donate
-------
+---
 
-Ordinals is open-source and community funded. The current lead maintainer of
-`ord` is [raphjaph](https://github.com/raphjaph/). Raph's work on `ord` is
-entirely funded by donations. If you can, please consider donating!
+## Fork relationship to ord
 
-The donation address is
-[bc1qguzk63exy7h5uygg8m2tcenca094a8t464jfyvrmr0s6wkt74wls3zr5m3](https://mempool.space/address/bc1qguzk63exy7h5uygg8m2tcenca094a8t464jfyvrmr0s6wkt74wls3zr5m3).
+Lord is maintained by [bitmask-stack](https://github.com/bitmask-stack/lord) as a **directional fork**, not a drop-in ord release:
 
-This address is 2 of 4 multisig wallet with keys held by
-[raphjaph](https://twitter.com/raphjaph),
-[erin](https://twitter.com/realizingerin),
-[rodarmor](https://twitter.com/rodarmor), and
-[ordinally](https://twitter.com/veryordinally).
+- CLI and HTTP surface are preserved where they still apply.
+- Inscription/rune codepaths are deleted, not feature-flagged.
+- Persistence moved from redb to heed3+rkyv (no automatic migration).
+- New subcommands: `storage`, `filepack`, `commit`; new crates `lord-storage`, `lord-commit`, `lord-db`, `lord-pack`.
 
-Bitcoin received will go towards funding maintenance and development of `ord`,
-as well as hosting costs for [ordinals.com](https://ordinals.com).
+Upstream ord docs, install scripts, and community channels refer to **ordinals.com / ord** — use those for ordinal-specific tooling. For Lord issues and design, use this repository.
 
-Thank you for donating!
+---
 
-Wallet
-------
+## Security
 
-`ord` relies on Bitcoin Core for private key management and transaction signing.
-This has a number of implications that you must understand in order to use
-`ord` wallet commands safely:
+`lord server` hosts untrusted HTML/JavaScript like ord. See [security notes](docs/src/security.md). Segregate wallets: Lord loads Bitcoin Core wallets for its commands; do not point it at high-value cardinal wallets you also manage manually with `bitcoin-cli`.
 
-- Bitcoin Core is not aware of inscriptions and does not perform sat
-  control. Using `bitcoin-cli` commands and RPC calls with `ord` wallets may
-  lead to loss of inscriptions.
+---
 
-- `ord wallet` commands automatically load the `ord` wallet given by the
-  `--name` option, which defaults to 'ord'. Keep in mind that after running
-  an `ord wallet` command, an `ord` wallet may be loaded.
+## Contributing
 
-- Because `ord` has access to your Bitcoin Core wallets, `ord` should not be
-  used with wallets that contain a material amount of funds. Keep ordinal and
-  cardinal wallets segregated.
-
-Security
---------
-
-The `ord server` explorer hosts untrusted HTML and JavaScript. This creates
-potential security vulnerabilities, including cross-site scripting and spoofing
-attacks. You are solely responsible for understanding and mitigating these
-attacks. See the [documentation](docs/src/security.md) for more details.
-
-Installation
-------------
-
-`ord` is written in Rust and can be built from
-[source](https://github.com/ordinals/ord). Pre-built binaries are available on the
-[releases page](https://github.com/ordinals/ord/releases).
-
-You can install the latest pre-built binary from the command line with:
+Tests are required for new logic. With [just](https://github.com/casey/just) installed:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsLS https://ordinals.com/install.sh | bash -s
+just ci    # fmt, clippy, full test suite
 ```
 
-Once `ord` is installed, you should be able to run `ord --version` on the
-command line.
+Integration tests use the in-repo [`mockcore`](crates/mockcore) Bitcoin Core mock. See the [justfile](justfile) for more recipes.
 
-Building
---------
+---
 
-On Linux, `ord` requires `libssl-dev` when building from source.
+## License
 
-On Debian-derived Linux distributions, including Ubuntu:
-
-```
-sudo apt-get install pkg-config libssl-dev build-essential
-```
-
-On Red Hat-derived Linux distributions:
-
-```
-yum install -y pkgconfig openssl-devel
-yum groupinstall "Development Tools"
-```
-
-You'll also need Rust:
-
-```
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-Clone the `ord` repo:
-
-```
-git clone https://github.com/ordinals/ord.git
-cd ord
-```
-
-To build a specific version of `ord`, first checkout that version:
-
-```
-git checkout <VERSION>
-```
-
-And finally to actually build `ord`:
-
-```
-cargo build --release
-```
-
-Once built, the `ord` binary can be found at `./target/release/ord`.
-
-`ord` requires `rustc` version 1.79.0 or later. Run `rustc --version` to ensure
-you have this version. Run `rustup update` to get the latest stable release.
-
-### Docker
-
-A Docker image can be built with:
-
-```
-docker build -t ordinals/ord .
-```
-
-### Homebrew
-
-`ord` is available in [Homebrew](https://brew.sh/):
-
-```
-brew install ord
-```
-
-### Debian Package
-
-To build a `.deb` package:
-
-```
-cargo install cargo-deb
-cargo deb
-```
-
-Contributing
-------------
-
-If you wish to contribute there are a couple things that are helpful to know. We
-put a lot of emphasis on proper testing in the code base, with three broad
-categories of tests: unit, integration and fuzz. Unit tests can usually be found at
-the bottom of a file in a mod block called `tests`. If you add or modify a
-function please also add a corresponding test. Integration tests try to test
-end-to-end functionality by executing a subcommand of the binary. Those can be
-found in the [tests](tests) directory. We don't have a lot of fuzzing but the
-basic structure of how we do it can be found in the [fuzz](fuzz) directory.
-
-We strongly recommend installing [just](https://github.com/casey/just) to make
-running the tests easier. To run our CI test suite you would do:
-
-```
-just ci
-```
-
-This corresponds to the commands:
-
-```
-cargo fmt -- --check
-cargo test --all
-cargo test --all -- --ignored
-```
-
-Have a look at the [justfile](justfile) to see some more helpful recipes
-(commands). Here are a couple more good ones:
-
-```
-just fmt
-just fuzz
-just doc
-just watch ltest --all
-```
-
-If the tests are failing or hanging, you might need to increase the maximum
-number of open files by running `ulimit -n 1024` in your shell before you run
-the tests, or in your shell configuration.
-
-We also try to follow a TDD (Test-Driven-Development) approach, which means we
-use tests as a way to get visibility into the code. Tests have to run fast for that
-reason so that the feedback loop between making a change, running the test and
-seeing the result is small. To facilitate that we created a mocked Bitcoin Core
-instance in [mockcore](./crates/mockcore)
-
-Syncing
--------
-
-`ord` requires a synced `bitcoind` node with `-txindex` to build the index of
-satoshi locations. `ord` communicates with `bitcoind` via RPC.
-
-If `bitcoind` is run locally by the same user, without additional
-configuration, `ord` should find it automatically by reading the `.cookie` file
-from `bitcoind`'s datadir, and connecting using the default RPC port.
-
-If `bitcoind` is not on mainnet, is not run by the same user, has a non-default
-datadir, or a non-default port, you'll need to pass additional flags to `ord`.
-See `ord --help` for details.
-
-`bitcoind` RPC Authentication
------------------------------
-
-`ord` makes RPC calls to `bitcoind`, which usually requires a username and
-password.
-
-By default, `ord` looks a username and password in the cookie file created by
-`bitcoind`.
-
-The cookie file path can be configured using `--cookie-file`:
-
-```
-ord --cookie-file /path/to/cookie/file server
-```
-
-Alternatively, `ord` can be supplied with a username and password on the
-command line:
-
-```
-ord --bitcoin-rpc-username foo --bitcoin-rpc-password bar server
-```
-
-Using environment variables:
-
-```
-export ORD_BITCOIN_RPC_USERNAME=foo
-export ORD_BITCOIN_RPC_PASSWORD=bar
-ord server
-```
-
-Or in the config file:
-
-```yaml
-bitcoin_rpc_username: foo
-bitcoin_rpc_password: bar
-```
-
-Logging
---------
-
-`ord` uses [env_logger](https://docs.rs/env_logger/latest/env_logger/). Set the
-`RUST_LOG` environment variable in order to turn on logging. For example, run
-the server and show `info`-level log messages and above:
-
-```
-$ RUST_LOG=info cargo run server
-```
-
-Set the `RUST_BACKTRACE` environment variable in order to turn on full rust
-backtrace. For example, run the server and turn on debugging and full backtrace:
-
-```
-$ RUST_BACKTRACE=1 RUST_LOG=debug ord server
-```
-
-New Releases
-------------
-
-Release commit messages use the following template:
-
-```
-Release x.y.z
-
-- Bump version: x.y.z → x.y.z
-- Update changelog
-- Update changelog contributor credits
-- Update dependencies
-```
-
-Translations
-------------
-
-To translate [the docs](https://docs.ordinals.com) we use
-[mdBook i18n helper](https://github.com/google/mdbook-i18n-helpers).
-
-See
-[mdbook-i18n-helpers usage guide](https://github.com/google/mdbook-i18n-helpers/blob/main/i18n-helpers/USAGE.md)
-for help.
-
-Adding a new translations is somewhat involved, so feel free to start
-translation and open a pull request, even if your translation is incomplete.
-
-Take a look at
-[this commit](https://github.com/ordinals/ord/commit/329f31bf6dac207dad001507dd6f18c87fdef355)
-for an example of adding a new translation. A maintainer will help you integrate it
-into our build system.
-
-To start a new translation:
-
-1. Install `mdbook`, `mdbook-i18n-helpers`, and `mdbook-linkcheck`:
-
-   ```
-   cargo install mdbook mdbook-i18n-helpers mdbook-linkcheck
-   ```
-
-2. Generate a new `pot` file named `messages.pot`:
-
-   ```
-   MDBOOK_OUTPUT='{"xgettext": {"pot-file": "messages.pot"}}'
-   mdbook build -d po
-   ```
-
-3. Run `msgmerge` on `XX.po` where `XX` is the two-letter
-   [ISO-639](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) code for
-   the language you are translating into. This will update the `po` file with
-   the text of the most recent English version:
-
-   ```
-   msgmerge --update po/XX.po po/messages.pot
-   ```
-
-4. Untranslated sections are marked with `#, fuzzy` in `XX.po`. Edit the
-   `msgstr` string with the translated text.
-
-5. Execute the `mdbook` command to rebuild the docs. For Chinese, whose
-   two-letter ISO-639 code is `zh`:
-
-   ```
-   mdbook build docs -d build
-   MDBOOK_BOOK__LANGUAGE=zh mdbook build docs -d build/zh
-   mv docs/build/zh/html docs/build/html/zh
-   python3 -m http.server --directory docs/build/html --bind 127.0.0.1 8080
-   ```
-
-6. If everything looks good, commit `XX.po` and open a pull request on GitHub.
-   Other changed files should be omitted from the pull request.
+CC0-1.0 — see [LICENSE](LICENSE). Experimental software; no warranty.

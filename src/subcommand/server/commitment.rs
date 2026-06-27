@@ -6,6 +6,7 @@ use {
 };
 
 const COMMITMENTS_PAGE_SIZE: usize = 100;
+const MAX_COMMITMENT_CONTENT_BYTES: u64 = 32 * 1024 * 1024;
 
 pub(super) async fn commitment_detail(
   Extension(settings): Extension<Arc<Settings>>,
@@ -20,6 +21,7 @@ pub(super) async fn commitment_detail(
     let meta = store
       .get_commitment(&rtxn, &root_bytes)?
       .ok_or_not_found(|| format!("commitment {bao_root}"))?;
+    let timestamped = meta.is_timestamped();
 
     if accept_json {
       return Ok(
@@ -36,7 +38,8 @@ pub(super) async fn commitment_detail(
           created_at: meta.created_at,
           ots_proof_path: meta.ots_proof_path.clone(),
           ots_order_key: meta.ots_order_key.as_ref().map(hex::encode),
-          timestamped: meta.ots_proof_path.is_some(),
+          timestamped,
+          timestamped_at: meta.timestamped_at,
         })
         .into_response(),
       );
@@ -56,7 +59,8 @@ pub(super) async fn commitment_detail(
         created_at: meta.created_at,
         ots_proof_path: meta.ots_proof_path,
         ots_order_key: meta.ots_order_key.as_ref().map(hex::encode),
-        timestamped: meta.ots_order_key.is_some(),
+        timestamped_at: meta.timestamped_at,
+        timestamped,
       }
       .page(server_config)
       .into_response(),
@@ -109,6 +113,7 @@ pub(super) async fn commitments_list_paginated(
           ots_order_key: hex::encode(order_key),
           carbonado_path: meta.carbonado_path,
           format: meta.format,
+          timestamped_at: meta.timestamped_at,
         }
       })
       .collect();
@@ -123,6 +128,7 @@ pub(super) async fn commitments_list_paginated(
               ots_order_key: entry.ots_order_key.clone(),
               carbonado_path: entry.carbonado_path.clone(),
               format: entry.format,
+              timestamped_at: entry.timestamped_at,
             })
             .collect(),
           page,
@@ -184,6 +190,17 @@ pub(super) async fn commitment_content(
       return Err(ServerError::NotFound(format!(
         "carbonado file `{}`",
         meta.carbonado_path
+      )));
+    }
+
+    let file_len = std::fs::metadata(&path)
+      .map_err(|err| {
+        ServerError::Internal(anyhow::anyhow!("failed to stat carbonado file: {err}"))
+      })?
+      .len();
+    if file_len > MAX_COMMITMENT_CONTENT_BYTES {
+      return Err(ServerError::BadRequest(format!(
+        "carbonado file exceeds maximum size of {MAX_COMMITMENT_CONTENT_BYTES} bytes"
       )));
     }
 

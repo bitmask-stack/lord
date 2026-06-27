@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::breccia_timestamps::load_breccia_timestamps;
 use crate::meta::{CommitmentMeta, CommitmentMetaV1, CommitmentMetaV2};
 use crate::paths::StoragePaths;
 use anyhow::{Context, Result, anyhow};
@@ -139,14 +140,14 @@ impl StorageStore {
     order_key: &[u8],
     bao_root: &[u8; 32],
   ) -> Result<()> {
-    if let Some(existing) = self.commitment_order.get(wtxn, order_key)? {
-      if existing.as_ref() != bao_root.as_slice() {
-        anyhow::bail!(
-          "COMMITMENT_ORDER key {} already maps to {}",
-          hex::encode(order_key),
-          hex::encode(existing)
-        );
-      }
+    if let Some(existing) = self.commitment_order.get(wtxn, order_key)?
+      && existing != bao_root.as_slice()
+    {
+      anyhow::bail!(
+        "COMMITMENT_ORDER key {} already maps to {}",
+        hex::encode(order_key),
+        hex::encode(existing)
+      );
     }
     self
       .commitment_order
@@ -260,6 +261,12 @@ impl StorageStore {
   }
 
   fn migrate_v2_to_v3(&self) -> Result<()> {
+    let data_dir = self
+      .path
+      .parent()
+      .context("storage path must have a parent data directory")?;
+    let breccia_timestamps = load_breccia_timestamps(data_dir)?;
+
     let rtxn = self.begin_read()?;
     let db: Database<Bytes, Bytes> = self
       .lord_env
@@ -276,7 +283,16 @@ impl StorageStore {
           .context("failed to read CommitmentMeta v2 during migration")?;
       let meta_v2 = rkyv::deserialize::<CommitmentMetaV2, rkyv::rancor::Error>(archived)
         .context("failed to deserialize CommitmentMeta v2 during migration")?;
-      migrated.push(CommitmentMeta::from(meta_v2));
+      let mut meta = CommitmentMeta::from(meta_v2);
+      if meta.ots_order_key.is_some() {
+        meta.timestamped_at = Some(
+          breccia_timestamps
+            .get(&bao_root)
+            .copied()
+            .unwrap_or(meta.created_at),
+        );
+      }
+      migrated.push(meta);
       if bao_root != migrated.last().expect("entry").bao_root {
         anyhow::bail!("commitment key does not match metadata bao_root during migration");
       }
@@ -467,7 +483,62 @@ mod tests {
       .get_commitment(&rtxn, &[8u8; 32])
       .expect("get")
       .expect("meta");
-    assert!(stored.timestamped_at.is_none());
+    assert_eq!(stored.timestamped_at, Some(1));
+  }
+
+  #[test]
+  fn migrates_schema_version_two_to_three_uses_breccia_timestamp() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let bao_root = [9u8; 32];
+    let breccia_ts = 1_700_000_000u64;
+    {
+      let log_path = dir.path().join("breccia");
+      std::fs::create_dir_all(&log_path).expect("breccia dir");
+      let entry = bincode::serialize(&BrecciaMigrationEntry {
+        bao_root,
+        ots_order_key: vec![1, 2],
+        timestamped_at: breccia_ts,
+        carbonado_path: "x.c12".into(),
+      })
+      .expect("serialize");
+      write_test_breccia_log(&log_path.join("global.breccia"), &[entry.as_slice()])
+        .expect("breccia");
+    }
+    {
+      let store = StorageStore::open(dir.path()).expect("open");
+      let meta = CommitmentMetaV2 {
+        bao_root,
+        carbonado_path: "x.c12".into(),
+        format: 12,
+        visibility: crate::meta::Visibility::Public,
+        layout: Layout::Inboard,
+        filepack_fp: None,
+        created_at: 1,
+        ots_proof_path: Some("ots/x.ots".into()),
+        ots_order_key: Some(vec![1, 2]),
+      };
+      let mut wtxn = store.begin_write().expect("write");
+      let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&meta).expect("serialize v2");
+      let db: Database<Bytes, Bytes> = store
+        .lord_env
+        .open_named_database(&wtxn, COMMITMENT_META)
+        .expect("open")
+        .expect("db");
+      db.put(&mut wtxn, &meta.bao_root, bytes.as_ref())
+        .expect("put raw");
+      store
+        .set_statistic(&mut wtxn, Statistic::Schema.key(), 2)
+        .expect("set v2");
+      wtxn.commit().expect("commit");
+    }
+
+    let store = StorageStore::open(dir.path()).expect("reopen");
+    let rtxn = store.begin_read().expect("read");
+    let stored = store
+      .get_commitment(&rtxn, &bao_root)
+      .expect("get")
+      .expect("meta");
+    assert_eq!(stored.timestamped_at, Some(breccia_ts));
   }
 
   #[test]
@@ -552,5 +623,26 @@ mod tests {
       .expect("get")
       .expect("meta");
     assert_eq!(stored.filepack_fp.as_deref(), Some("fp-new"));
+  }
+
+  #[derive(serde::Serialize)]
+  struct BrecciaMigrationEntry {
+    bao_root: [u8; 32],
+    ots_order_key: Vec<u8>,
+    timestamped_at: u64,
+    carbonado_path: String,
+  }
+
+  fn write_test_breccia_log(path: &Path, blobs: &[&[u8]]) -> Result<()> {
+    use std::io::Write;
+
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(b"LORBRECC")?;
+    file.write_all(&1u32.to_le_bytes())?;
+    for blob in blobs {
+      file.write_all(&(blob.len() as u64).to_le_bytes())?;
+      file.write_all(blob)?;
+    }
+    Ok(())
   }
 }
