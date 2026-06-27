@@ -1,4 +1,4 @@
-use {super::*, crate::wallet::batch, colored::Colorize, std::net::TcpListener};
+use {super::*, colored::Colorize, std::net::TcpListener};
 
 struct KillOnDrop(process::Child);
 
@@ -14,18 +14,11 @@ impl Drop for KillOnDrop {
 
 #[derive(Debug, Parser)]
 pub(crate) struct Env {
-  #[arg(default_value = "env", help = "Create env in <DIRECTORY>.")]
+  #[arg(
+    default_value = "env",
+    help = "Create regtest lord and bitcoind environment in <DIRECTORY>."
+  )]
   directory: PathBuf,
-  #[arg(
-    long,
-    help = "Decompress encoded content. Currently only supports brotli. Be careful using this on production instances. A decompressed inscription may be arbitrarily large, making decompression a DoS vector."
-  )]
-  pub(crate) decompress: bool,
-  #[arg(
-    long,
-    help = "Proxy `/content/INSCRIPTION_ID` and other recursive endpoints to `<PROXY>` if the inscription is not present on current chain."
-  )]
-  pub(crate) proxy: Option<Url>,
 }
 
 #[derive(Serialize)]
@@ -77,36 +70,6 @@ rpcport={bitcoind_port}
       )?;
     }
 
-    fs::write(absolute.join("inscription.txt"), "FOO")?;
-
-    let yaml = serde_yaml::to_string(&batch::File {
-      etching: Some(batch::Etching {
-        divisibility: 0,
-        rune: "FOO".parse::<SpacedRune>().unwrap(),
-        supply: "2000".parse().unwrap(),
-        premine: "1000".parse().unwrap(),
-        symbol: '¢',
-        terms: Some(batch::Terms {
-          amount: "1000".parse().unwrap(),
-          cap: 1,
-          ..default()
-        }),
-        turbo: false,
-      }),
-      inscriptions: vec![batch::Entry {
-        file: Some("env/inscription.txt".into()),
-        ..default()
-      }],
-      ..default()
-    })
-    .unwrap();
-
-    let batch_yaml = absolute.join("batch.yaml");
-
-    if !batch_yaml.try_exists()? {
-      fs::write(absolute.join("batch.yaml"), yaml)?;
-    }
-
     let _bitcoind = KillOnDrop(
       Command::new("bitcoind")
         .arg(format!("-conf={}", absolute.join("bitcoin.conf").display()))
@@ -136,9 +99,6 @@ rpcport={bitcoind_port}
 
     let ord = std::env::current_exe()?;
 
-    let decompress = self.decompress;
-    let proxy = self.proxy.map(|url| url.to_string());
-
     let mut command = Command::new(&ord);
     let ord_server = command
       .arg("--datadir")
@@ -147,14 +107,6 @@ rpcport={bitcoind_port}
       .arg("--polling-interval=100ms")
       .arg("--http-port")
       .arg(ord_port.to_string());
-
-    if decompress {
-      ord_server.arg("--decompress");
-    }
-
-    if let Some(proxy) = proxy {
-      ord_server.arg("--proxy").arg(proxy);
-    }
 
     let _ord = KillOnDrop(ord_server.spawn()?);
 
@@ -233,9 +185,9 @@ rpcport={bitcoind_port}
 bitcoin-cli -datadir={datadir} getblockchaininfo
 {}
 {} --datadir {datadir} wallet balance",
-      "`ord` server URL:".blue().bold(),
+      "`lord` server URL:".blue().bold(),
       "Example `bitcoin-cli` command:".blue().bold(),
-      "Example `ord` command:".blue().bold(),
+      "Example `lord` command:".blue().bold(),
       ord.display(),
     );
 

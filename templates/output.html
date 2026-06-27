@@ -1,30 +1,5 @@
 <h1>Output <span class=monospace>{{self.outpoint}}</span></h1>
 <dl>
-%% if let Some(inscriptions) = self.inscriptions.as_ref().filter(|inscriptions| !inscriptions.is_empty()) {
-  <dt>inscriptions</dt>
-  <dd class=thumbnails>
-%% for inscription in inscriptions {
-    {{Iframe::thumbnail(*inscription)}}
-%% }
-  </dd>
-%% }
-%% if let Some(runes) = self.runes.as_ref().filter(|runes| !runes.is_empty()) {
-  <dt>runes</dt>
-  <dd>
-    <table>
-      <tr>
-        <th>rune</th>
-        <th>balance</th>
-      </tr>
-%% for (rune, balance) in runes {
-      <tr>
-        <td><a href=/rune/{{ rune }}>{{ rune }}</a></td>
-        <td>{{ balance }}</td>
-      </tr>
-%% }
-    </table>
-  </dd>
-%% }
   <dt>value</dt><dd>{{ self.output.value.to_sat() }}</dd>
   <dt>script pubkey</dt><dd class=monospace>{{ self.output.script_pubkey.to_asm_string() }}</dd>
 %% if let Ok(address) = self.chain.address_from_script(&self.output.script_pubkey ) {

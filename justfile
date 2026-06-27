@@ -37,16 +37,16 @@ deploy branch remote chain domain:
   rsync -avz deploy/checkout root@{{domain}}:deploy/checkout
   ssh root@{{domain}} 'cd deploy && ./checkout {{branch}} {{remote}} {{chain}} {{domain}}'
 
-deploy-mainnet-alpha branch='master' remote='ordinals/ord': \
+deploy-mainnet-alpha branch='master' remote='bitmask-stack/lord': \
   (deploy branch remote 'main' 'alpha.ordinals.net')
 
-deploy-mainnet-bravo branch='master' remote='ordinals/ord': \
+deploy-mainnet-bravo branch='master' remote='bitmask-stack/lord': \
   (deploy branch remote 'main' 'bravo.ordinals.net')
 
-deploy-mainnet-charlie branch='master' remote='ordinals/ord': \
+deploy-mainnet-charlie branch='master' remote='bitmask-stack/lord': \
   (deploy branch remote 'main' 'charlie.ordinals.net')
 
-deploy-signet branch='master' remote='ordinals/ord': \
+deploy-signet branch='master' remote='bitmask-stack/lord': \
   (deploy branch remote 'signet' 'signet.ordinals.net')
 
 deploy-all: \
@@ -59,7 +59,7 @@ delete-indices: \
   (delete-index "signet.ordinals.net") \
 
 delete-index domain:
-  ssh root@{{domain}} 'systemctl stop ord && rm -f /var/lib/ord/*/index.redb'
+  ssh root@{{domain}} 'systemctl stop lord && rm -f /var/lib/lord/*/index.redb'
 
 servers := 'alpha bravo charlie signet'
 
@@ -89,7 +89,7 @@ server-keys:
     ssh root@$server.ordinals.net cat .ssh/authorized_keys
   done
 
-log unit='ord' domain='alpha.ordinals.net':
+log unit='lord' domain='alpha.ordinals.net':
   ssh root@{{domain}} 'journalctl -fu {{unit}}'
 
 fuzz:
@@ -125,27 +125,29 @@ prepare-release revision='master':
   git commit -m "Release $version"
   gh pr create --web
 
+# Publishes the lord crate from bitmask-stack/lord (not upstream ordinals/ord).
 publish-release revision='master':
   #!/usr/bin/env bash
   set -euxo pipefail
   rm -rf tmp/release
-  git clone --depth 1 https://github.com/ordinals/ord.git tmp/release
+  git clone --depth 1 https://github.com/bitmask-stack/lord.git tmp/release
   cd tmp/release
   git checkout {{ revision }}
   cargo publish
   cd ../..
   rm -rf tmp/release
 
+# Tags and publishes lord releases from bitmask-stack/lord.
 publish-tag-and-crate revision='master':
   #!/usr/bin/env bash
   set -euxo pipefail
   rm -rf tmp/release
-  git clone --depth 1 git@github.com:ordinals/ord.git tmp/release
+  git clone --depth 1 git@github.com:bitmask-stack/lord.git tmp/release
   cd tmp/release
   git checkout {{revision}}
   version=`sed -En 's/version[[:space:]]*=[[:space:]]*"([^"]+)"/\1/p' Cargo.toml | head -1`
   git tag -a $version -m "Release $version"
-  git push git@github.com:ordinals/ord.git $version
+  git push git@github.com:bitmask-stack/lord.git $version
   cargo publish
   cd ../..
   rm -rf tmp/release
@@ -161,7 +163,7 @@ update-modern-normalize:
     https://raw.githubusercontent.com/sindresorhus/modern-normalize/main/modern-normalize.css \
     > static/modern-normalize.css
 
-download-log unit='ord' host='alpha.ordinals.net':
+download-log unit='lord' host='alpha.ordinals.net':
   ssh root@{{host}} 'mkdir -p tmp && journalctl -u {{unit}} > tmp/{{unit}}.log'
   mkdir -p tmp/{{unit}}
   rsync --progress --compress root@{{host}}:tmp/{{unit}}.log tmp/{{unit}}.log

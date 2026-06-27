@@ -1,14 +1,14 @@
-FROM rust:1.85.0-bookworm AS builder
+FROM rust:1.89.0-bookworm AS builder
 
-WORKDIR /usr/src/ord
+WORKDIR /usr/src/lord
 
 COPY . .
 
-RUN cargo build --bin ord --release
+RUN cargo build --bin lord --release
 
 FROM debian:bookworm-slim
 
-COPY --from=builder /usr/src/ord/target/release/ord /usr/local/bin
+COPY --from=builder /usr/src/lord/target/release/lord /usr/local/bin
 RUN apt-get update && apt-get install -y openssl
 
 ENV RUST_BACKTRACE=1

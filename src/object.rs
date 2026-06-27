@@ -4,10 +4,8 @@ use super::*;
 pub enum Object {
   Address(Address<NetworkUnchecked>),
   Hash([u8; 32]),
-  InscriptionId(InscriptionId),
   Integer(u128),
   OutPoint(OutPoint),
-  Rune(SpacedRune),
   Sat(Sat),
   SatPoint(SatPoint),
 }
@@ -30,11 +28,6 @@ impl FromStr for Object {
           .snafu_context(error::HashParse { input })?
           .to_byte_array(),
       )),
-      InscriptionId => Ok(Self::InscriptionId(
-        input
-          .parse()
-          .snafu_context(error::InscriptionIdParse { input })?,
-      )),
       Integer => Ok(Self::Integer(
         input.parse().snafu_context(error::IntegerParse { input })?,
       )),
@@ -42,9 +35,6 @@ impl FromStr for Object {
         input
           .parse()
           .snafu_context(error::OutPointParse { input })?,
-      )),
-      Rune => Ok(Self::Rune(
-        input.parse().snafu_context(error::RuneParse { input })?,
       )),
       SatPoint => Ok(Self::SatPoint(
         input
@@ -65,10 +55,8 @@ impl Display for Object {
         }
         Ok(())
       }
-      Self::InscriptionId(inscription_id) => write!(f, "{inscription_id}"),
       Self::Integer(integer) => write!(f, "{integer}"),
       Self::OutPoint(outpoint) => write!(f, "{outpoint}"),
-      Self::Rune(rune) => write!(f, "{rune}"),
       Self::Sat(sat) => write!(f, "{sat}"),
       Self::SatPoint(satpoint) => write!(f, "{satpoint}"),
     }
@@ -105,15 +93,6 @@ mod tests {
     assert_eq!("0%".parse::<Object>().unwrap(), Object::Sat(Sat(0)));
 
     case("0", Object::Integer(0));
-
-    case(
-      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefi1",
-      Object::InscriptionId(
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefi1"
-          .parse()
-          .unwrap(),
-      ),
-    );
 
     case(
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -202,20 +181,6 @@ mod tests {
           .parse()
           .unwrap(),
       ),
-    );
-    case(
-      "A",
-      Object::Rune(SpacedRune {
-        rune: Rune(0),
-        spacers: 0,
-      }),
-    );
-    case(
-      "A•A",
-      Object::Rune(SpacedRune {
-        rune: Rune(26),
-        spacers: 1,
-      }),
     );
   }
 }

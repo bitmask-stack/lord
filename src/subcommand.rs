@@ -1,19 +1,15 @@
 use super::*;
 
-pub mod balances;
-pub mod decode;
 pub mod env;
 pub mod epochs;
 pub mod find;
 pub mod index;
 pub mod list;
 pub mod parse;
-pub mod runes;
 pub mod server;
 mod settings;
 pub mod subsidy;
 pub mod supply;
-pub mod teleburn;
 pub mod traits;
 pub mod verify;
 pub mod wallet;
@@ -21,11 +17,7 @@ pub mod wallets;
 
 #[derive(Debug, Parser)]
 pub(crate) enum Subcommand {
-  #[command(about = "List all rune balances")]
-  Balances,
-  #[command(about = "Decode a transaction")]
-  Decode(decode::Decode),
-  #[command(about = "Start a regtest ord and bitcoind instance")]
+  #[command(about = "Start a regtest lord and bitcoind instance")]
   Env(env::Env),
   #[command(about = "List the first satoshis of each reward epoch")]
   Epochs,
@@ -37,8 +29,6 @@ pub(crate) enum Subcommand {
   List(list::List),
   #[command(about = "Parse a satoshi from ordinal notation")]
   Parse(parse::Parse),
-  #[command(about = "List all runes")]
-  Runes,
   #[command(about = "Run the explorer server")]
   Server(server::Server),
   #[command(about = "Display settings")]
@@ -47,8 +37,6 @@ pub(crate) enum Subcommand {
   Subsidy(subsidy::Subsidy),
   #[command(about = "Display Bitcoin supply information")]
   Supply,
-  #[command(about = "Generate teleburn addresses")]
-  Teleburn(teleburn::Teleburn),
   #[command(about = "Display satoshi traits")]
   Traits(traits::Traits),
   #[command(about = "Verify BIP322 signature")]
@@ -62,15 +50,12 @@ pub(crate) enum Subcommand {
 impl Subcommand {
   pub(crate) fn run(self, settings: Settings) -> SubcommandResult {
     match self {
-      Self::Balances => balances::run(settings),
-      Self::Decode(decode) => decode.run(settings),
       Self::Env(env) => env.run(),
       Self::Epochs => epochs::run(),
       Self::Find(find) => find.run(settings),
       Self::Index(index) => index.run(settings),
       Self::List(list) => list.run(settings),
       Self::Parse(parse) => parse.run(),
-      Self::Runes => runes::run(settings),
       Self::Server(server) => {
         let index = Arc::new(Index::open(&settings)?);
         let handle = axum_server::Handle::new();
@@ -80,7 +65,6 @@ impl Subcommand {
       Self::Settings => settings::run(settings),
       Self::Subsidy(subsidy) => subsidy.run(),
       Self::Supply => supply::run(),
-      Self::Teleburn(teleburn) => teleburn.run(),
       Self::Traits(traits) => traits.run(),
       Self::Verify(verify) => verify.run(),
       Self::Wallet(wallet) => wallet.run(settings),

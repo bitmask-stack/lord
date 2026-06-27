@@ -1,4 +1,12 @@
-<h1 align=center><code>ord</code></h1>
+<h1 align=center><code>lord</code></h1>
+
+> **Fork of [ord](https://github.com/ordinals/ord).** Preserves the CLI, API, and core
+> wallet/explorer functionality. Removes inscriptions and runes. See the
+> [Lord Design Document](docs/src/lord/design.md) for the full plan.
+
+---
+
+<h2 align=center>Upstream: <code>ord</code></h2>
 
 <div align=center>
   <a href=https://crates.io/crates/ord>

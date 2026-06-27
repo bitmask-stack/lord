@@ -25,14 +25,6 @@
 %% }
   </dd>
 %% }
-%% if !self.inscriptions.is_empty() {
-  <dt>inscriptions</dt>
-  <dd class=thumbnails>
-%% for inscription in &self.inscriptions {
-    {{Iframe::thumbnail(*inscription)}}
-%% }
-  </dd>
-%% }
 %% if let Some(satpoint) = self.satpoint {
   <dt>location</dt><dd><a class=collapse href=/satpoint/{{ satpoint }}>{{ satpoint }}</a></dd>
 %% }

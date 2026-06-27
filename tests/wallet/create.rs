@@ -1,4 +1,4 @@
-use {super::*, ord::subcommand::wallet::create::Output};
+use {super::*, lord::subcommand::wallet::create::Output};
 
 #[test]
 fn create() {

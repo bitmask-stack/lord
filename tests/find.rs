@@ -1,6 +1,6 @@
 use {
   super::*,
-  ord::subcommand::find::{FindRangeOutput, Output},
+  lord::subcommand::find::{FindRangeOutput, Output},
 };
 
 #[test]

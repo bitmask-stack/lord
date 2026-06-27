@@ -1,6 +1,9 @@
 Summary
 =======
 
+[Lord](lord.md)
+- [Design Document](lord/design.md)
+- [Implementation Notes](lord/implementation.md)
 [Introduction](introduction.md)
 - [Overview](overview.md)
 - [Digital Artifacts](digital-artifacts.md)

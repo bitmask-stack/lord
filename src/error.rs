@@ -13,11 +13,6 @@ pub enum SnafuError {
     source: bitcoin::hex::HexToArrayError,
     input: String,
   },
-  #[snafu(display("Failed to parse inscription ID `{}`", input))]
-  InscriptionIdParse {
-    source: inscriptions::inscription_id::ParseError,
-    input: String,
-  },
   #[snafu(display("Failed to parse integer `{}`", input))]
   IntegerParse {
     source: std::num::ParseIntError,
@@ -26,11 +21,6 @@ pub enum SnafuError {
   #[snafu(display("Failed to parse out point `{}`", input))]
   OutPointParse {
     source: bitcoin::transaction::ParseOutPointError,
-    input: String,
-  },
-  #[snafu(display("Failed to parse rune `{}`", input))]
-  RuneParse {
-    source: ordinals::spaced_rune::Error,
     input: String,
   },
   #[snafu(display("Failed to parse sat `{}`", input))]
@@ -52,8 +42,6 @@ pub enum SnafuError {
   },
   #[snafu(display("Unrecognized outgoing: `{}`", input))]
   OutgoingParse { input: String },
-  #[snafu(display("Failed to parse decimal: {}", source))]
-  RuneAmountParse { source: error::Error, input: String },
   #[snafu(display("Invalid chain `{}`", chain))]
   InvalidChain { chain: String },
   #[snafu(display("Failed to convert script to address: {}", source))]

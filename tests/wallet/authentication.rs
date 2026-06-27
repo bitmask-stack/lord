@@ -1,4 +1,4 @@
-use {super::*, ord::subcommand::wallet::balance::Output};
+use {super::*, lord::subcommand::wallet::balance::Output};
 
 #[test]
 fn authentication() {
@@ -21,7 +21,7 @@ fn authentication() {
     0
   );
 
-  core.mine_blocks(1);
+  mine_blocks(&core, &ord, 1);
 
   assert_eq!(
     CommandBuilder::new("--server-username foo --server-password bar wallet balance")
@@ -30,9 +30,6 @@ fn authentication() {
       .run_and_deserialize_output::<Output>(),
     Output {
       cardinal: 50 * COIN_VALUE,
-      ordinal: 0,
-      runic: None,
-      runes: None,
       total: 50 * COIN_VALUE,
     }
   );

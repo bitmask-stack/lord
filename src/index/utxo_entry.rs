@@ -3,7 +3,7 @@ use {
     Index,
     entry::{Entry, SatRange},
   },
-  ordinals::varint,
+  ordinals::varint::{self},
   redb::TypeName,
   ref_cast::RefCast,
   std::ops::Deref,
@@ -121,7 +121,7 @@ impl redb::Value for &UtxoEntry {
   }
 
   fn type_name() -> TypeName {
-    TypeName::new("ord::UtxoEntry")
+    TypeName::new("lord::UtxoEntry")
   }
 }
 

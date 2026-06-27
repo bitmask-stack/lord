@@ -1,4 +1,4 @@
-use {super::*, std::fmt::Write};
+use {super::*, crate::subcommand::server::accept_encoding::AcceptEncoding, std::fmt::Write};
 
 #[derive(Debug)]
 pub(super) enum ServerError {
@@ -32,7 +32,7 @@ impl IntoResponse for ServerError {
         content_encoding,
       } => {
         let mut message = format!(
-          "inscription content encoding `{}` is not acceptable.",
+          "content encoding `{}` is not acceptable.",
           String::from_utf8_lossy(content_encoding.as_bytes())
         );
 

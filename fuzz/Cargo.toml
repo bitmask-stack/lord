@@ -17,14 +17,8 @@ debug = 1
 arbitrary = { version = "1", features = ["derive"] }
 bitcoin = { version = "0.30.1", features = ["rand"] }
 libfuzzer-sys = "0.4"
-ord = { path = ".." }
+lord = { path = ".." }
 ordinals = { path = "../crates/ordinals" }
-
-[[bin]]
-name = "runestone-decipher"
-path = "fuzz_targets/runestone_decipher.rs"
-test = false
-doc = false
 
 [[bin]]
 name = "transaction-builder"

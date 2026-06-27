@@ -5,44 +5,44 @@ set -euxo pipefail
 VERSION=${REF#"refs/tags/"}
 DIST=`pwd`/dist
 
-echo "Packaging ord $VERSION for $TARGET..."
+echo "Packaging lord $VERSION for $TARGET..."
 
 test -f Cargo.lock || cargo generate-lockfile
 
-echo "Building ord..."
+echo "Building lord..."
 RUSTFLAGS="--deny warnings $TARGET_RUSTFLAGS" \
-  cargo build --bin ord --target $TARGET --release
-EXECUTABLE=target/$TARGET/release/ord
+  cargo build --bin lord --target $TARGET --release
+EXECUTABLE=target/$TARGET/release/lord
 
 if [[ $OS == windows-latest ]]; then
   EXECUTABLE=$EXECUTABLE.exe
 fi
 
 echo "Copying release files..."
-mkdir -p dist/ord-$VERSION
+mkdir -p dist/lord-$VERSION
 cp \
   $EXECUTABLE \
   Cargo.lock \
   Cargo.toml \
   LICENSE \
   README.md \
-  $DIST/ord-$VERSION
+  $DIST/lord-$VERSION
 
 cd $DIST
 echo "Creating release archive..."
 case $OS in
   ubuntu-latest | macos-latest)
-    ARCHIVE=$DIST/ord-$VERSION-$TARGET.tar.gz
+    ARCHIVE=$DIST/lord-$VERSION-$TARGET.tar.gz
     tar czf $ARCHIVE *
     if [[ -n "${GITHUB_OUTPUT+x}" ]]; then
       echo archive=$ARCHIVE >> $GITHUB_OUTPUT
     fi
     ;;
   windows-latest)
-    ARCHIVE=$DIST/ord-$VERSION-$TARGET.zip
+    ARCHIVE=$DIST/lord-$VERSION-$TARGET.zip
     7z a $ARCHIVE *
     if [[ -n "${GITHUB_OUTPUT+x}" ]]; then
-      echo archive=`pwd -W`/ord-$VERSION-$TARGET.zip >> $GITHUB_OUTPUT
+      echo archive=`pwd -W`/lord-$VERSION-$TARGET.zip >> $GITHUB_OUTPUT
     fi
     ;;
 esac

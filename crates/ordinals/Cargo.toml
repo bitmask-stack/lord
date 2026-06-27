@@ -1,7 +1,7 @@
 [package]
 name = "ordinals"
 version = "0.0.15"
-description = "Library for interoperating with ordinals and inscriptions"
+description = "Library for ordinal theory sat types and varint encoding"
 
 authors.workspace = true
 edition.workspace = true

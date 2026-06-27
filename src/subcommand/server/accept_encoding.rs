@@ -57,7 +57,6 @@ mod tests {
       &mut req.into_parts().0,
       &Arc::new(ServerConfig {
         json_api_enabled: false,
-        decompress: false,
         ..default()
       }),
     )
@@ -78,7 +77,6 @@ mod tests {
       &mut req.into_parts().0,
       &Arc::new(ServerConfig {
         json_api_enabled: false,
-        decompress: false,
         ..default()
       }),
     )
@@ -107,7 +105,6 @@ mod tests {
       &mut req.into_parts().0,
       &Arc::new(ServerConfig {
         json_api_enabled: false,
-        decompress: false,
         ..default()
       }),
     )

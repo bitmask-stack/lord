@@ -1,6 +1,6 @@
 use {
   super::*,
-  ord::subcommand::wallet::{addresses::Output as AddressesOutput, sign::Output as SignOutput},
+  lord::subcommand::wallet::{addresses::Output as AddressesOutput, sign::Output as SignOutput},
 };
 
 #[test]
@@ -11,7 +11,7 @@ fn sign() {
 
   create_wallet(&core, &ord);
 
-  core.mine_blocks(1);
+  mine_blocks(&core, &ord, 1);
 
   let addresses = CommandBuilder::new("wallet addresses")
     .core(&core)
@@ -50,7 +50,7 @@ fn sign_file() {
 
   create_wallet(&core, &ord);
 
-  core.mine_blocks(1);
+  mine_blocks(&core, &ord, 1);
 
   let addresses = CommandBuilder::new("wallet addresses")
     .core(&core)
@@ -94,33 +94,6 @@ fn sign_file() {
 }
 
 #[test]
-fn sign_for_inscription() {
-  let core = mockcore::spawn();
-
-  let ord = TestServer::spawn_with_server_args(&core, &[], &[]);
-
-  create_wallet(&core, &ord);
-
-  let (inscription, _reveal) = inscribe(&core, &ord);
-
-  core.mine_blocks(1);
-
-  let addresses = CommandBuilder::new("wallet addresses")
-    .core(&core)
-    .ord(&ord)
-    .run_and_deserialize_output::<BTreeMap<Address<NetworkUnchecked>, Vec<AddressesOutput>>>();
-
-  let text = "HelloWorld";
-
-  let sign = CommandBuilder::new(format!("wallet sign --signer {inscription} --text {text}",))
-    .core(&core)
-    .ord(&ord)
-    .run_and_deserialize_output::<SignOutput>();
-
-  assert!(addresses.contains_key(&sign.address));
-}
-
-#[test]
 fn sign_for_output() {
   let core = mockcore::spawn();
 
@@ -128,7 +101,7 @@ fn sign_for_output() {
 
   create_wallet(&core, &ord);
 
-  core.mine_blocks(1);
+  mine_blocks(&core, &ord, 1);
 
   let addresses = CommandBuilder::new("wallet addresses")
     .core(&core)

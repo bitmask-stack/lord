@@ -190,7 +190,7 @@ impl CommandBuilder {
   }
 
   pub(crate) fn command(&self) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ord"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_lord"));
 
     if let Some(rpc_server_url) = &self.core_url {
       command.args([

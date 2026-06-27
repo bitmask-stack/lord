@@ -1,4 +1,4 @@
-use {super::*, ord::subcommand::wallet::transactions::Output};
+use {super::*, lord::subcommand::wallet::transactions::Output};
 
 #[test]
 fn transactions() {
@@ -17,7 +17,7 @@ fn transactions() {
   assert_eq!(core.loaded_wallets().len(), 1);
   assert_eq!(core.loaded_wallets().first().unwrap(), "ord");
 
-  core.mine_blocks(1);
+  mine_blocks(&core, &ord, 1);
 
   let output = CommandBuilder::new("wallet transactions")
     .core(&core)
@@ -40,7 +40,7 @@ fn transactions_with_limit() {
     .stdout_regex(".*")
     .run_and_extract_stdout();
 
-  core.mine_blocks(1);
+  mine_blocks(&core, &ord, 1);
 
   let output = CommandBuilder::new("wallet transactions")
     .core(&core)
@@ -49,7 +49,7 @@ fn transactions_with_limit() {
 
   assert_eq!(output.len(), 1);
 
-  core.mine_blocks(1);
+  mine_blocks(&core, &ord, 1);
 
   let output = CommandBuilder::new("wallet transactions")
     .core(&core)

@@ -1,0 +1,41 @@
+[Unit]
+After=network.target
+Description=Lord server
+StartLimitBurst=120
+StartLimitIntervalSec=10m
+
+[Service]
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Environment=RUST_BACKTRACE=1
+Environment=RUST_LOG=info
+ExecStart=/usr/local/bin/lord \
+  --bitcoin-data-dir /var/lib/bitcoind \
+  --chain ${CHAIN} \
+  --config-dir /var/lib/lord \
+  --datadir /var/lib/lord \
+  --index-addresses \
+  --index-sats \
+  server \
+  --acme-contact mailto:casey@rodarmor.com \
+  --csp-origin https://${CSP_ORIGIN} \
+  --http \
+  --https
+Group=lord
+LimitNOFILE=65536
+MemoryDenyWriteExecute=true
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+Restart=on-failure
+RestartSec=5s
+StateDirectory=lord
+StateDirectoryMode=0700
+TimeoutStopSec=10m
+Type=simple
+User=lord
+WorkingDirectory=/var/lib/lord
+
+[Install]
+WantedBy=multi-user.target

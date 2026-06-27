@@ -1,21 +1,8 @@
 pub(crate) use {
-  super::*,
-  bitcoin::{
-    WPubkeyHash,
-    blockdata::script::{PushBytes, PushBytesBuf},
-    opcodes,
-  },
-  mockcore::TransactionTemplate,
-  ordinals::COIN_VALUE,
-  pretty_assertions::assert_eq as pretty_assert_eq,
-  std::iter,
-  tempfile::TempDir,
+  super::*, bitcoin::WPubkeyHash, mockcore::TransactionTemplate, ordinals::COIN_VALUE,
+  pretty_assertions::assert_eq as pretty_assert_eq, std::iter, tempfile::TempDir,
   unindent::Unindent,
 };
-
-pub(crate) fn rune_id(tx: u32) -> RuneId {
-  RuneId { block: 1, tx }
-}
 
 pub(crate) fn txid(n: u32) -> Txid {
   let hex = format!("{n:x}");
@@ -98,56 +85,6 @@ pub(crate) fn tx_out(value: u64, address: Address) -> TxOut {
     value: Amount::from_sat(value),
     script_pubkey: address.script_pubkey(),
   }
-}
-
-#[derive(Default, Debug)]
-pub(crate) struct InscriptionTemplate {
-  pub(crate) parents: Vec<InscriptionId>,
-  pub(crate) pointer: Option<u64>,
-}
-
-impl From<InscriptionTemplate> for Inscription {
-  fn from(template: InscriptionTemplate) -> Self {
-    Self {
-      parents: template.parents.into_iter().map(|id| id.value()).collect(),
-      pointer: template.pointer.map(Inscription::pointer_value),
-      ..default()
-    }
-  }
-}
-
-pub(crate) fn inscription(content_type: &str, body: impl AsRef<[u8]>) -> Inscription {
-  Inscription {
-    content_type: Some(content_type.into()),
-    body: Some(body.as_ref().into()),
-    ..default()
-  }
-}
-
-pub(crate) fn inscription_id(n: u32) -> InscriptionId {
-  let hex = format!("{n:x}");
-
-  if hex.is_empty() || hex.len() > 1 {
-    panic!();
-  }
-
-  format!("{}i{n}", hex.repeat(64)).parse().unwrap()
-}
-
-pub(crate) fn envelope(payload: &[&[u8]]) -> Witness {
-  let mut builder = script::Builder::new()
-    .push_opcode(opcodes::OP_FALSE)
-    .push_opcode(opcodes::all::OP_IF);
-
-  for data in payload {
-    let mut buf = PushBytesBuf::new();
-    buf.extend_from_slice(data).unwrap();
-    builder = builder.push_slice(buf);
-  }
-
-  let script = builder.push_opcode(opcodes::all::OP_ENDIF).into_script();
-
-  Witness::from_slice(&[script.into_bytes(), Vec::new()])
 }
 
 pub(crate) fn default_address(chain: Chain) -> Address {

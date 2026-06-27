@@ -56,8 +56,6 @@ pub struct Options {
     help = "Set index cache size to <INDEX_CACHE_SIZE> bytes. [default: 1/4 available RAM]"
   )]
   pub(crate) index_cache_size: Option<usize>,
-  #[arg(long, help = "Track location of runes.")]
-  pub(crate) index_runes: bool,
   #[arg(long, help = "Track location of all satoshis.")]
   pub(crate) index_sats: bool,
   #[arg(long, help = "Store transactions in index.")]
@@ -66,13 +64,6 @@ pub struct Options {
   pub(crate) integration_test: bool,
   #[clap(long, short, long, help = "Specify output format. [default: json]")]
   pub(crate) format: Option<OutputFormat>,
-  #[arg(
-    long,
-    short,
-    alias = "noindex_inscriptions",
-    help = "Do not index inscriptions."
-  )]
-  pub(crate) no_index_inscriptions: bool,
   #[arg(
     long,
     help = "Require basic HTTP authentication with <SERVER_PASSWORD>. Credentials are sent in cleartext. Consider using authentication in conjunction with HTTPS."

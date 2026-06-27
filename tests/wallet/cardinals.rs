@@ -1,74 +1,26 @@
-use {
-  super::*,
-  ord::subcommand::wallet::{cardinals::CardinalUtxo, outputs::Output},
-};
+use {super::*, lord::subcommand::wallet::cardinals::CardinalUtxo};
 
 #[test]
 fn cardinals() {
   let core = mockcore::spawn();
-
-  let ord = TestServer::spawn_with_server_args(&core, &[], &[]);
+  let ord = TestServer::spawn(&core);
 
   create_wallet(&core, &ord);
 
-  inscribe(&core, &ord);
+  let coinbase_tx = &mine_blocks_with_subsidy(&core, &ord, 1, 1_000_000)[0].txdata[0];
+  let outpoint = OutPoint::new(coinbase_tx.compute_txid(), 0);
+  let amount = coinbase_tx.output[0].value;
 
-  let all_outputs = CommandBuilder::new("wallet outputs")
-    .core(&core)
-    .ord(&ord)
-    .run_and_deserialize_output::<Vec<Output>>();
-
-  let cardinal_outputs = CommandBuilder::new("wallet cardinals")
+  let cardinals = CommandBuilder::new("wallet cardinals")
     .core(&core)
     .ord(&ord)
     .run_and_deserialize_output::<Vec<CardinalUtxo>>();
 
-  assert_eq!(all_outputs.len() - cardinal_outputs.len(), 1);
-}
-
-#[test]
-fn cardinals_does_not_show_runic_outputs() {
-  let core = mockcore::builder().network(Network::Regtest).build();
-
-  let ord = TestServer::spawn_with_server_args(&core, &["--regtest", "--index-runes"], &[]);
-
-  create_wallet(&core, &ord);
-
-  core.mine_blocks(1);
-
-  batch(
-    &core,
-    &ord,
-    batch::File {
-      etching: Some(batch::Etching {
-        supply: "1000".parse().unwrap(),
-        divisibility: 0,
-        terms: None,
-        premine: "1000".parse().unwrap(),
-        rune: SpacedRune {
-          rune: Rune(RUNE),
-          spacers: 0,
-        },
-        symbol: '¢',
-        turbo: false,
-      }),
-      inscriptions: vec![batch::Entry {
-        file: Some("inscription.jpeg".into()),
-        ..default()
-      }],
-      ..default()
-    },
+  pretty_assert_eq!(
+    cardinals,
+    vec![CardinalUtxo {
+      output: outpoint,
+      amount: amount.to_sat(),
+    }]
   );
-
-  let all_outputs = CommandBuilder::new("--regtest wallet outputs")
-    .core(&core)
-    .ord(&ord)
-    .run_and_deserialize_output::<Vec<Output>>();
-
-  let cardinal_outputs = CommandBuilder::new("--regtest wallet cardinals")
-    .core(&core)
-    .ord(&ord)
-    .run_and_deserialize_output::<Vec<CardinalUtxo>>();
-
-  assert_eq!(all_outputs.len() - cardinal_outputs.len(), 2);
 }

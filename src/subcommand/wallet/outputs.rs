@@ -13,10 +13,6 @@ pub struct Output {
   pub address: Option<Address<NetworkUnchecked>>,
   pub amount: u64,
   #[serde(skip_serializing_if = "Option::is_none")]
-  pub inscriptions: Option<Vec<InscriptionId>>,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  pub runes: Option<BTreeMap<SpacedRune, Decimal>>,
-  #[serde(skip_serializing_if = "Option::is_none")]
   pub sat_ranges: Option<Vec<String>>,
 }
 
@@ -29,25 +25,6 @@ impl Outputs {
         .address_from_script(&txout.script_pubkey)
         .ok()
         .map(|address| address.as_unchecked().clone());
-
-      let inscriptions = wallet.get_inscriptions_in_output(output)?;
-
-      let runes = wallet
-        .get_runes_balances_in_output(output)?
-        .map(|balances| {
-          balances
-            .iter()
-            .map(|(rune, pile)| {
-              (
-                *rune,
-                Decimal {
-                  value: pile.amount,
-                  scale: pile.divisibility,
-                },
-              )
-            })
-            .collect()
-        });
 
       let sat_ranges = if wallet.has_sat_index() && self.ranges {
         Some(
@@ -64,9 +41,7 @@ impl Outputs {
       outputs.push(Output {
         address,
         amount: txout.value.to_sat(),
-        inscriptions,
         output: *output,
-        runes,
         sat_ranges,
       });
     }

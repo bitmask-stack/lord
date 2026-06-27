@@ -59,7 +59,6 @@ impl WalletConstructor {
             Err(bitcoincore_rpc::Error::JsonRpc(bitcoincore_rpc::jsonrpc::Error::Rpc(err)))
               if err.code == -4 && err.message == "Wallet already loading." =>
             {
-              // wallet loading
               eprint!(".");
               thread::sleep(Duration::from_secs(3));
               continue;
@@ -67,7 +66,6 @@ impl WalletConstructor {
             Err(bitcoincore_rpc::Error::JsonRpc(bitcoincore_rpc::jsonrpc::Error::Rpc(err)))
               if err.code == -35 =>
             {
-              // wallet already loaded
               break;
             }
             Err(err) => {
@@ -122,22 +120,12 @@ impl WalletConstructor {
 
     let output_info = self.get_output_info(utxos.clone().into_keys().collect())?;
 
-    let inscriptions = output_info
-      .values()
-      .flat_map(|info| info.inscriptions.clone().unwrap_or_default())
-      .collect::<Vec<InscriptionId>>();
-
-    let (inscriptions, inscription_info) = self.get_inscriptions(&inscriptions)?;
-
     let status = self.get_server_status()?;
 
     Ok(Wallet {
       bitcoin_client,
       database,
-      has_rune_index: status.rune_index,
       has_sat_index: status.sat_index,
-      inscription_info,
-      inscriptions,
       locked_utxos,
       ord_client: self.ord_client,
       output_info,
@@ -164,40 +152,7 @@ impl WalletConstructor {
     let output_info: BTreeMap<OutPoint, api::Output> =
       outputs.into_iter().zip(response_outputs).collect();
 
-    for (output, info) in &output_info {
-      if !info.indexed {
-        bail!("output in wallet but not in ord server: {output}");
-      }
-    }
-
     Ok(output_info)
-  }
-
-  fn get_inscriptions(
-    &self,
-    inscriptions: &Vec<InscriptionId>,
-  ) -> Result<(
-    BTreeMap<SatPoint, Vec<InscriptionId>>,
-    BTreeMap<InscriptionId, api::Inscription>,
-  )> {
-    let response = self.post("/inscriptions", inscriptions)?;
-
-    if !response.status().is_success() {
-      bail!("wallet failed get inscriptions: {}", response.text()?);
-    }
-
-    let mut inscriptions = BTreeMap::new();
-    let mut inscription_infos = BTreeMap::new();
-    for info in serde_json::from_str::<Vec<api::Inscription>>(&response.text()?)? {
-      inscriptions
-        .entry(info.satpoint)
-        .or_insert_with(Vec::new)
-        .push(info.id);
-
-      inscription_infos.insert(info.id, info);
-    }
-
-    Ok((inscriptions, inscription_infos))
   }
 
   fn get_utxos(bitcoin_client: &Client) -> Result<BTreeMap<OutPoint, TxOut>> {

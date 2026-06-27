@@ -1,0 +1,15 @@
+[package]
+name = "lord-db"
+version = "0.1.0"
+description = "heed3 + rkyv persistence layer for Lord"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+heed3.workspace = true
+rkyv.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

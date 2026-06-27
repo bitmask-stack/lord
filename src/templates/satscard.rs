@@ -76,9 +76,7 @@ mod tests {
           Some(AddressHtml {
             address: crate::satscard::tests::coinkite_address(),
             header: false,
-            inscriptions: Some(Vec::new()),
             outputs: Vec::new(),
-            runes_balances: None,
             sat_balance: 0,
           })
         )),
@@ -117,7 +115,6 @@ mod tests {
     </ul>
   </dd>
 </dl>
-
 "#,
     );
   }
@@ -134,9 +131,7 @@ mod tests {
           Some(AddressHtml {
             address: crate::satscard::tests::coinkite_address(),
             header: false,
-            inscriptions: Some(Vec::new()),
             outputs: Vec::new(),
-            runes_balances: None,
             sat_balance: 0,
           })
         )),
@@ -162,9 +157,7 @@ mod tests {
           Some(AddressHtml {
             address: crate::satscard::tests::coinkite_address(),
             header: false,
-            inscriptions: Some(Vec::new()),
             outputs: Vec::new(),
-            runes_balances: None,
             sat_balance: 0,
           })
         )),

@@ -3,6 +3,8 @@
   clippy::result_large_err,
   clippy::too_many_arguments,
   clippy::type_complexity,
+  dead_code,
+  private_interfaces,
   mismatched_lifetime_syntaxes
 )]
 #![deny(
@@ -19,12 +21,6 @@ use {
     decimal::Decimal,
     deserialize_from_str::DeserializeFromStr,
     fund_raw_transaction::fund_raw_transaction,
-    index::BitcoinCoreRpcResultExt,
-    inscriptions::{
-      inscription_id,
-      media::{self, ImageRendering, Media},
-      teleburn,
-    },
     into_u64::IntoU64,
     into_usize::IntoUsize,
     option_ext::OptionExt,
@@ -33,7 +29,7 @@ use {
     satscard::Satscard,
     settings::Settings,
     signer::Signer,
-    subcommand::{OutputFormat, Subcommand, SubcommandResult},
+    subcommand::{OutputFormat, Subcommand},
     tally::Tally,
   },
   anyhow::{Context, Error, anyhow, bail, ensure},
@@ -43,43 +39,35 @@ use {
     Transaction, TxIn, TxOut, Txid, Witness,
     address::{Address, NetworkUnchecked},
     blockdata::{
-      constants::{DIFFCHANGE_INTERVAL, MAX_SCRIPT_ELEMENT_SIZE, SUBSIDY_HALVING_INTERVAL},
+      constants::{DIFFCHANGE_INTERVAL, SUBSIDY_HALVING_INTERVAL},
       locktime::absolute::LockTime,
     },
     consensus::{self, Decodable, Encodable},
     hash_types::{BlockHash, TxMerkleNode},
     hashes::Hash,
-    policy::MAX_STANDARD_TX_WEIGHT,
-    script,
     secp256k1::{self, Secp256k1},
     transaction::Version,
   },
   bitcoincore_rpc::{Client, RpcApi},
-  boilerplate::{Escape, Trusted},
+  boilerplate::Trusted,
   chrono::{DateTime, TimeZone, Utc},
-  ciborium::Value,
   clap::{ArgGroup, Parser},
   error::{ResultExt, SnafuError},
-  ordinals::{
-    Artifact, Charm, Edict, Epoch, Etching, Height, Pile, Rarity, Rune, RuneId, Runestone, Sat,
-    SatPoint, SpacedRune, Terms, varint,
-  },
+  ordinals::{Charm, Epoch, Height, Rarity, Sat, SatPoint},
   regex::Regex,
-  reqwest::{StatusCode, Url, header::HeaderMap},
+  reqwest::{Url, header::HeaderMap},
   serde::{Deserialize, Deserializer, Serialize},
   serde_with::{DeserializeFromStr, SerializeDisplay},
   snafu::{Backtrace, ErrorCompat, Snafu},
   std::{
     backtrace::BacktraceStatus,
-    borrow::Cow,
     cmp,
     collections::{BTreeMap, BTreeSet, HashSet},
     env,
     ffi::OsString,
     fmt::{self, Display, Formatter},
     fs::{self, File},
-    io::{self, BufReader, Cursor, Read},
-    mem,
+    io::{self, Read},
     net::{SocketAddr, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{self, Command, Stdio},
@@ -98,11 +86,9 @@ use {
 pub use self::{
   chain::Chain,
   fee_rate::FeeRate,
-  index::{Index, RuneEntry},
-  inscriptions::{Envelope, Inscription, InscriptionId, ParsedEnvelope, RawEnvelope},
+  index::Index,
   object::Object,
   options::Options,
-  properties::{Attributes, Item, Properties, Trait, Traits},
   wallet::transaction_builder::{Target, TransactionBuilder},
 };
 
@@ -123,7 +109,6 @@ mod error;
 mod fee_rate;
 mod fund_raw_transaction;
 pub mod index;
-mod inscriptions;
 mod into_u64;
 mod into_usize;
 mod macros;
@@ -131,10 +116,8 @@ mod object;
 mod option_ext;
 pub mod options;
 pub mod outgoing;
-mod properties;
 mod re;
 mod representation;
-pub mod runes;
 mod satscard;
 pub mod settings;
 mod signer;

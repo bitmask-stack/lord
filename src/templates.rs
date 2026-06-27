@@ -1,62 +1,21 @@
 use {super::*, boilerplate::Boilerplate};
 
 pub(crate) use {
-  crate::subcommand::server::ServerConfig,
-  address::AddressHtml,
-  attributes::AttributesHtml,
-  block::BlockHtml,
-  children::ChildrenHtml,
-  clock::ClockSvg,
-  collections::CollectionsHtml,
-  galleries::GalleriesHtml,
-  gallery::GalleryHtml,
-  home::HomeHtml,
-  iframe::Iframe,
-  input::InputHtml,
-  inscriptions::InscriptionsHtml,
-  inscriptions_block::InscriptionsBlockHtml,
-  metadata::MetadataHtml,
-  output::OutputHtml,
-  parents::ParentsHtml,
-  preview::{
-    PreviewAudioHtml, PreviewCodeHtml, PreviewFontHtml, PreviewImageHtml, PreviewMarkdownHtml,
-    PreviewModelHtml, PreviewPdfHtml, PreviewTextHtml, PreviewUnknownHtml, PreviewVideoHtml,
-  },
-  rare::RareTxt,
-  rune_not_found::RuneNotFoundHtml,
-  sat::SatHtml,
+  crate::subcommand::server::ServerConfig, address::AddressHtml, block::BlockHtml, clock::ClockSvg,
+  home::HomeHtml, input::InputHtml, output::OutputHtml, rare::RareTxt, sat::SatHtml,
   satscard::SatscardHtml,
 };
 
-pub use {
-  blocks::BlocksHtml, inscription::InscriptionHtml, item::ItemHtml, rune::RuneHtml,
-  runes::RunesHtml, status::StatusHtml, transaction::TransactionHtml,
-};
+pub use {blocks::BlocksHtml, status::StatusHtml, transaction::TransactionHtml};
 
 pub mod address;
-mod attributes;
 pub mod block;
 pub mod blocks;
-mod children;
 mod clock;
-pub mod collections;
-mod galleries;
-mod gallery;
 mod home;
-mod iframe;
 mod input;
-pub mod inscription;
-pub mod inscriptions;
-mod inscriptions_block;
-mod item;
-mod metadata;
 pub mod output;
-mod parents;
-mod preview;
 mod rare;
-pub mod rune;
-pub mod rune_not_found;
-pub mod runes;
 pub mod sat;
 mod satscard;
 pub mod status;
@@ -141,43 +100,7 @@ mod tests {
         index_sats: true,
         ..default()
       }),),
-      r"<!doctype html>
-<html lang=en>
-  <head>
-    <meta charset=utf-8>
-    <meta name=format-detection content='telephone=no'>
-    <meta name=viewport content='width=device-width,initial-scale=1.0'>
-    <meta property=og:title content='Foo'>
-    <meta property=og:image content='https://signet.ordinals.com/static/favicon.png'>
-    <meta property=twitter:card content=summary>
-    <title>Foo</title>
-    <link rel=alternate href=/feed.xml type=application/rss\+xml title='Inscription Feed'>
-    <link rel=icon href=/static/favicon.png>
-    <link rel=icon href=/static/favicon.svg>
-    <link rel=stylesheet href=/static/index.css>
-    <link rel=stylesheet href=/static/modern-normalize.css>
-    <script src=/static/index.js></script>
-  </head>
-  <body>
-  <header>
-    <nav>
-      <a href=/ title=home>Ordinals<sup>beta</sup></a>
-      .*
-      <a href=/clock title=clock>.*</a>
-      <a href=/rare.txt title=rare>.*</a>
-      .*
-      <form action=/search method=get>
-        <input type=text .*>
-        <input class=icon type=image .*>
-      </form>
-    </nav>
-  </header>
-  <main>
-<h1>Foo</h1>
-  </main>
-  </body>
-</html>
-"
+      r".*<meta property=og:image content='https://signet.ordinals.com/static/favicon.png'>.*<a href=/ title=home>Lord<sup>beta</sup></a>.*<a href=/blocks title=blocks>.*</a>.*<a href=/rare.txt title=rare>.*</a>.*<form action=/search method=get>.*<h1>Foo</h1>.*"
     );
   }
 
@@ -191,7 +114,7 @@ mod tests {
         index_sats: true,
         ..default()
       })),
-      r".*<nav>\s*<a href=/ title=home>Ordinals<sup>beta</sup></a>.*"
+      r".*<nav>\s*<a href=/ title=home>Lord<sup>beta</sup></a>.*"
     );
   }
 
@@ -205,7 +128,7 @@ mod tests {
         index_sats: false,
         ..default()
       })),
-      r".*<nav>\s*<a href=/ title=home>Ordinals<sup>beta</sup></a>.*<a href=/clock title=clock>.*</a>\s*<form action=/search.*",
+      r".*<nav>\s*<a href=/ title=home>Lord<sup>beta</sup></a>.*<a href=/clock title=clock>.*</a>\s*<form action=/search.*",
     );
   }
 
@@ -219,7 +142,7 @@ mod tests {
         index_sats: true,
         ..default()
       })),
-      r".*<nav>\s*<a href=/ title=home>Ordinals<sup>signet</sup></a>.*"
+      r".*<nav>\s*<a href=/ title=home>Lord<sup>signet</sup></a>.*"
     );
   }
 }

@@ -17,10 +17,7 @@ group(
     .args(&["text", "file"])))
 ]
 pub(crate) struct Sign {
-  #[arg(
-    long,
-    help = "Sign with public key associated with address, output, or inscription."
-  )]
+  #[arg(long, help = "Sign with public key associated with address or output.")]
   signer: Signer,
   #[arg(long, help = "Sign <TEXT>.")]
   text: Option<String>,
@@ -32,16 +29,6 @@ impl Sign {
   pub(crate) fn run(&self, wallet: Wallet) -> SubcommandResult {
     let address = match &self.signer {
       Signer::Address(address) => address.clone().require_network(wallet.chain().network())?,
-      Signer::Inscription(inscription) => Address::from_str(
-        &wallet
-          .inscription_info()
-          .get(inscription)
-          .ok_or_else(|| anyhow!("inscription {inscription} not in wallet"))?
-          .address
-          .clone()
-          .ok_or_else(|| anyhow!("inscription {inscription} in output without address"))?,
-      )?
-      .require_network(wallet.chain().network())?,
       Signer::Output(output) => wallet.chain().address_from_script(
         &wallet
           .utxos()

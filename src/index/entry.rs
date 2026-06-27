@@ -39,6 +39,25 @@ impl Entry for Rune {
   }
 }
 
+#[derive(Debug, PartialEq)]
+pub enum MintError {
+  Cap(u128),
+  End(u64),
+  Start(u64),
+  Unmintable,
+}
+
+impl Display for MintError {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::Cap(cap) => write!(f, "limited to {cap} mints"),
+      Self::End(end) => write!(f, "mint ended on block {end}"),
+      Self::Start(start) => write!(f, "mint starts on block {start}"),
+      Self::Unmintable => write!(f, "not mintable"),
+    }
+  }
+}
+
 #[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub struct RuneEntry {
   pub block: u64,

@@ -8,7 +8,7 @@ CHAIN=$1
 DOMAIN=$2
 BRANCH=$3
 COMMIT=$4
-REVISION="ord-$BRANCH-$COMMIT"
+REVISION="lord-$BRANCH-$COMMIT"
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -71,9 +71,9 @@ esac
 
 mkdir -p \
   /etc/systemd/system/bitcoind.service.d \
-  /etc/systemd/system/ord.service.d
+  /etc/systemd/system/lord.service.d
 
-OVERRIDE=/etc/systemd/system/ord.service.d/override.conf
+OVERRIDE=/etc/systemd/system/lord.service.d/override.conf
 
 echo '[Service]' > $OVERRIDE
 echo "Environment=CHAIN=$CHAIN" >> $OVERRIDE
@@ -117,10 +117,10 @@ source ~/.cargo/env
 rustup update stable
 
 cargo build --release
-install --backup target/release/ord /usr/local/bin/ord
+install --backup target/release/lord /usr/local/bin/lord
 
 id --user bitcoin || useradd --system bitcoin
-id --user ord || useradd --system ord
+id --user lord || useradd --system lord
 
 cp deploy/bitcoind.service /etc/systemd/system/
 
@@ -141,19 +141,19 @@ while [[ ! -f $COOKIE_FILE_DIR/.cookie ]]; do
   sleep 1
 done
 
-setfacl -m ord:x /var/lib/bitcoind
-setfacl -m ord:x $COOKIE_FILE_DIR
-setfacl -dm ord:r $COOKIE_FILE_DIR
-setfacl -m ord:r $COOKIE_FILE_DIR/.cookie
+setfacl -m lord:x /var/lib/bitcoind
+setfacl -m lord:x $COOKIE_FILE_DIR
+setfacl -dm lord:r $COOKIE_FILE_DIR
+setfacl -m lord:r $COOKIE_FILE_DIR/.cookie
 
-journalctl --unit ord --vacuum-time 1s
+journalctl --unit lord --vacuum-time 1s
 
-cp deploy/ord.service /etc/systemd/system/
+cp deploy/lord.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable ord
-systemctl restart ord
+systemctl enable lord
+systemctl restart lord
 
 while ! curl --fail https://$DOMAIN/status > /dev/null; do
-  echo "Waiting for ord at https://$DOMAIN/status…"
+  echo "Waiting for lord at https://$DOMAIN/status…"
   sleep 1
 done

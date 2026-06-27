@@ -1,4 +1,4 @@
-use {super::*, ord::subcommand::index::info::TransactionsOutput};
+use {super::*, lord::subcommand::index::info::TransactionsOutput};
 
 #[test]
 fn json_with_satoshi_index() {
@@ -71,7 +71,7 @@ fn json_without_satoshi_index() {
     \}
   \],
   "tree_height": \d+,
-  "utxos_indexed": 1
+  "utxos_indexed": 0
 \}
 "#,
     )

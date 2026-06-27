@@ -1,6 +1,6 @@
 [package]
-name = "ord"
-description = "◉ Ordinal wallet and block explorer"
+name = "lord"
+description = "Lord — content-addressed storage and Bitcoin wallet/explorer (ord fork)"
 version = "0.27.1"
 autotests = false
 autobins = false
@@ -22,10 +22,14 @@ members = [".", "crates/*"]
 [workspace.package]
 authors = ["The Ord Maintainers"]
 edition = "2024"
-homepage = "https://github.com/ordinals/ord"
+homepage = "https://github.com/bitmask-stack/lord"
 license = "CC0-1.0"
-repository = "https://github.com/ordinals/ord"
+repository = "https://github.com/bitmask-stack/lord"
 rust-version = "1.89.0"
+
+[features]
+default = []
+sats = []
 
 [workspace.dependencies]
 base64 = "0.22.0"
@@ -41,6 +45,8 @@ serde = { version = "1.0.137", features = ["derive"] }
 serde_json = { version = "1.0.81", features = ["preserve_order"] }
 serde_with = "3.7.0"
 tempfile = "3.2.0"
+heed3 = "0.22.1"
+rkyv = { version = "0.8.16", features = ["unaligned"] }
 
 [dependencies]
 anyhow = { version = "1.0.90", features = ["backtrace"] }
@@ -108,11 +114,11 @@ reqwest.workspace = true
 unindent = "0.2.1"
 
 [[bin]]
-name = "ord"
+name = "lord"
 path = "src/bin/main.rs"
 
 [lib]
-name = "ord"
+name = "lord"
 path = "src/lib.rs"
 
 [[test]]

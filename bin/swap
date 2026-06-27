@@ -7,19 +7,19 @@ die() {
   exit 1
 }
 
-new=/var/lib/ord/index.redb.new
-current=/var/lib/ord/index.redb
-old=/var/lib/ord/index.redb.old
+new=/var/lib/lord/index.redb.new
+current=/var/lib/lord/index.redb
+old=/var/lib/lord/index.redb.old
 
 [[ -f $new ]] || die "new index missing: $new"
 [[ ! -f $old ]] || die "backup index already exists: $old"
 
-systemctl stop ord
+systemctl stop lord
 
-chown ord:ord $new
+chown lord:lord $new
 
 [[ -f $current ]] && mv $current $old
 
 mv $new $current
 
-systemctl restart ord
+systemctl restart lord

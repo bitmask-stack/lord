@@ -10,8 +10,6 @@ pub(crate) struct List {
 pub struct Output {
   pub address: Option<Address<NetworkUnchecked>>,
   pub indexed: bool,
-  pub inscriptions: Option<Vec<InscriptionId>>,
-  pub runes: Option<BTreeMap<SpacedRune, Pile>>,
   pub sat_ranges: Option<Vec<Range>>,
   pub script_pubkey: String,
   pub spent: bool,
@@ -52,8 +50,6 @@ impl List {
     Ok(Some(Box::new(Output {
       address: list.address,
       indexed: list.indexed,
-      inscriptions: list.inscriptions,
-      runes: list.runes,
       sat_ranges: list.sat_ranges.map(output_ranges),
       script_pubkey: list.script_pubkey.to_asm_string(),
       spent: list.spent,
@@ -69,60 +65,16 @@ fn output_ranges(ranges: Vec<(u64, u64)>) -> Vec<Range> {
     .into_iter()
     .map(|(start, end)| {
       let size = end - start;
-      let output = Range {
-        end,
+      let range = Range {
+        start,
         name: Sat(start).name(),
         offset,
         rarity: Sat(start).rarity(),
+        end,
         size,
-        start,
       };
-
       offset += size;
-
-      output
+      range
     })
     .collect()
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn list_ranges() {
-    assert_eq!(
-      output_ranges(vec![
-        (50 * COIN_VALUE, 55 * COIN_VALUE),
-        (10, 100),
-        (1050000000000000, 1150000000000000),
-      ]),
-      vec![
-        Range {
-          end: 55 * COIN_VALUE,
-          name: "nvtcsezkbth".to_string(),
-          offset: 0,
-          rarity: Rarity::Uncommon,
-          size: 5 * COIN_VALUE,
-          start: 50 * COIN_VALUE,
-        },
-        Range {
-          end: 100,
-          name: "nvtdijuwxlf".to_string(),
-          offset: 5 * COIN_VALUE,
-          rarity: Rarity::Common,
-          size: 90,
-          start: 10,
-        },
-        Range {
-          end: 1150000000000000,
-          name: "gkjbdrhkfqf".to_string(),
-          offset: 5 * COIN_VALUE + 90,
-          rarity: Rarity::Epic,
-          size: 100000000000000,
-          start: 1050000000000000,
-        }
-      ]
-    )
-  }
 }

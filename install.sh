@@ -12,7 +12,7 @@ fi
 
 help() {
   cat <<'EOF'
-Install a binary release of ord hosted on GitHub
+Install a binary release of lord hosted on GitHub
 
 USAGE:
     install.sh [options]
@@ -28,8 +28,8 @@ OPTIONS:
 EOF
 }
 
-crate=ord
-url=https://github.com/ordinals/ord
+crate=lord
+url=https://github.com/bitmask-stack/lord
 releases=$url/releases
 
 say() {
@@ -115,7 +115,7 @@ fi
 
 if [ -z "${tag-}" ]; then
   tag=$(
-    download https://api.github.com/repos/ordinals/ord/releases/latest - |
+    download https://api.github.com/repos/bitmask-stack/lord/releases/latest - |
     grep tag_name |
     cut -d'"' -f4
   )
@@ -164,18 +164,18 @@ say "Archive:     $archive"
 td=$(mktemp -d || mktemp -d -t tmp)
 
 if [ "$extension" = "zip" ]; then
-  download "$archive" "$td/ord.zip"
-  unzip -jd "$td" "$td/ord.zip"
+  download "$archive" "$td/lord.zip"
+  unzip -jd "$td" "$td/lord.zip"
 else
   download "$archive" - | tar --directory "$td" --strip-components 1 -xz
 fi
 
-if [ -e "$dest/ord" ] && [ "$force" = false ]; then
-  err "\`$dest/ord\` already exists"
+if [ -e "$dest/lord" ] && [ "$force" = false ]; then
+  err "\`$dest/lord\` already exists"
 else
   mkdir -p "$dest"
-  cp "$td/ord" "$dest/ord"
-  chmod 755 "$dest/ord"
+  cp "$td/lord" "$dest/lord"
+  chmod 755 "$dest/lord"
 fi
 
 rm -rf "$td"

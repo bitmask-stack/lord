@@ -15,17 +15,14 @@ pub struct Settings {
   cookie_file: Option<PathBuf>,
   data_dir: Option<PathBuf>,
   height_limit: Option<u32>,
-  hidden: Option<HashSet<InscriptionId>>,
   http_port: Option<u16>,
   index: Option<PathBuf>,
   index_addresses: bool,
   index_cache_size: Option<usize>,
-  index_runes: bool,
   index_sats: bool,
   index_transactions: bool,
   integration_test: bool,
   max_savepoints: Option<usize>,
-  no_index_inscriptions: bool,
   savepoint_interval: Option<usize>,
   server_password: Option<String>,
   server_url: Option<String>,
@@ -122,25 +119,14 @@ impl Settings {
       cookie_file: self.cookie_file.or(source.cookie_file),
       data_dir: self.data_dir.or(source.data_dir),
       height_limit: self.height_limit.or(source.height_limit),
-      hidden: Some(
-        self
-          .hidden
-          .iter()
-          .flatten()
-          .chain(source.hidden.iter().flatten())
-          .cloned()
-          .collect(),
-      ),
       http_port: self.http_port.or(source.http_port),
       index: self.index.or(source.index),
       index_addresses: self.index_addresses || source.index_addresses,
       index_cache_size: self.index_cache_size.or(source.index_cache_size),
-      index_runes: self.index_runes || source.index_runes,
       index_sats: self.index_sats || source.index_sats,
       index_transactions: self.index_transactions || source.index_transactions,
       integration_test: self.integration_test || source.integration_test,
       max_savepoints: self.max_savepoints.or(source.max_savepoints),
-      no_index_inscriptions: self.no_index_inscriptions || source.no_index_inscriptions,
       savepoint_interval: self.savepoint_interval.or(source.savepoint_interval),
       server_password: self.server_password.or(source.server_password),
       server_url: self.server_url.or(source.server_url),
@@ -168,17 +154,14 @@ impl Settings {
       cookie_file: options.cookie_file,
       data_dir: options.data_dir,
       height_limit: options.height_limit,
-      hidden: None,
       http_port: None,
       index: options.index,
       index_addresses: options.index_addresses,
       index_cache_size: options.index_cache_size,
-      index_runes: options.index_runes,
       index_sats: options.index_sats,
       index_transactions: options.index_transactions,
       integration_test: options.integration_test,
       max_savepoints: options.max_savepoints,
-      no_index_inscriptions: options.no_index_inscriptions,
       savepoint_interval: options.savepoint_interval,
       server_password: options.server_password,
       server_url: None,
@@ -204,21 +187,6 @@ impl Settings {
         .map(|chain| chain.parse::<Chain>())
         .transpose()
         .with_context(|| format!("failed to parse environment variable ORD_{key} as chain"))
-    };
-
-    let inscriptions = |key| {
-      env
-        .get(key)
-        .map(|inscriptions| {
-          inscriptions
-            .split_whitespace()
-            .map(|inscription_id| inscription_id.parse::<InscriptionId>())
-            .collect::<Result<HashSet<InscriptionId>, inscription_id::ParseError>>()
-        })
-        .transpose()
-        .with_context(|| {
-          format!("failed to parse environment variable ORD_{key} as inscription list")
-        })
     };
 
     let get_u16 = |key| {
@@ -258,17 +226,14 @@ impl Settings {
       cookie_file: get_path("COOKIE_FILE"),
       data_dir: get_path("DATA_DIR"),
       height_limit: get_u32("HEIGHT_LIMIT")?,
-      hidden: inscriptions("HIDDEN")?,
       http_port: get_u16("HTTP_PORT")?,
       index: get_path("INDEX"),
       index_addresses: get_bool("INDEX_ADDRESSES"),
       index_cache_size: get_usize("INDEX_CACHE_SIZE")?,
-      index_runes: get_bool("INDEX_RUNES"),
       index_sats: get_bool("INDEX_SATS"),
       index_transactions: get_bool("INDEX_TRANSACTIONS"),
       integration_test: get_bool("INTEGRATION_TEST"),
       max_savepoints: get_usize("MAX_SAVEPOINTS")?,
-      no_index_inscriptions: get_bool("NO_INDEX_INSCRIPTIONS"),
       savepoint_interval: get_usize("SAVEPOINT_INTERVAL")?,
       server_password: get_string("SERVER_PASSWORD"),
       server_url: get_string("SERVER_URL"),
@@ -290,17 +255,14 @@ impl Settings {
       cookie_file: None,
       data_dir: Some(dir.into()),
       height_limit: None,
-      hidden: None,
       http_port: None,
       index: None,
       index_addresses: true,
       index_cache_size: None,
-      index_runes: true,
       index_sats: true,
       index_transactions: false,
       integration_test: false,
       max_savepoints: None,
-      no_index_inscriptions: false,
       savepoint_interval: None,
       server_password: None,
       server_url: Some(server_url.into()),
@@ -359,7 +321,6 @@ impl Settings {
       cookie_file: Some(cookie_file),
       data_dir: Some(data_dir),
       height_limit: self.height_limit,
-      hidden: self.hidden,
       http_port: self.http_port,
       index: Some(index),
       index_addresses: self.index_addresses,
@@ -371,12 +332,10 @@ impl Settings {
           usize::try_from(sys.total_memory() / 4)?
         }
       }),
-      index_runes: self.index_runes,
       index_sats: self.index_sats,
       index_transactions: self.index_transactions,
       integration_test: self.integration_test,
       max_savepoints: Some(self.max_savepoints.unwrap_or(2)),
-      no_index_inscriptions: self.no_index_inscriptions,
       savepoint_interval: Some(self.savepoint_interval.unwrap_or(10)),
       server_password: self.server_password,
       server_url: self.server_url,
@@ -552,14 +511,6 @@ impl Settings {
     self.index_addresses
   }
 
-  pub fn index_inscriptions_raw(&self) -> bool {
-    !self.no_index_inscriptions
-  }
-
-  pub fn index_runes_raw(&self) -> bool {
-    self.index_runes
-  }
-
   pub fn index_cache_size(&self) -> usize {
     self.index_cache_size.unwrap()
   }
@@ -574,14 +525,6 @@ impl Settings {
 
   pub fn integration_test(&self) -> bool {
     self.integration_test
-  }
-
-  pub fn is_hidden(&self, inscription_id: InscriptionId) -> bool {
-    self
-      .hidden
-      .as_ref()
-      .map(|hidden| hidden.contains(&inscription_id))
-      .unwrap_or_default()
   }
 
   pub fn bitcoin_rpc_url(&self, wallet_name: Option<String>) -> String {
@@ -983,13 +926,6 @@ mod tests {
   }
 
   #[test]
-  fn index_runes() {
-    assert!(parse(&["--chain=signet", "--index-runes"]).index_runes_raw());
-    assert!(parse(&["--index-runes"]).index_runes_raw());
-    assert!(!parse(&[]).index_runes_raw());
-  }
-
-  #[test]
   fn bitcoin_rpc_and_pass_setting() {
     let config = Settings {
       bitcoin_rpc_username: Some("config_user".into()),
@@ -1086,17 +1022,14 @@ mod tests {
       ("COOKIE_FILE", "cookie file"),
       ("DATA_DIR", "/data/dir"),
       ("HEIGHT_LIMIT", "3"),
-      ("HIDDEN", "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0 703e5f7c49d82aab99e605af306b9a30e991e57d42f982908a962a81ac439832i0"),
       ("HTTP_PORT", "8080"),
       ("INDEX", "index"),
       ("INDEX_ADDRESSES", "1"),
       ("INDEX_CACHE_SIZE", "4"),
-      ("INDEX_RUNES", "1"),
       ("INDEX_SATS", "1"),
       ("INDEX_TRANSACTIONS", "1"),
       ("INTEGRATION_TEST", "1"),
       ("MAX_SAVEPOINTS", "2"),
-      ("NO_INDEX_INSCRIPTIONS", "1"),
       ("SAVEPOINT_INTERVAL", "10"),
       ("SERVER_PASSWORD", "server password"),
       ("SERVER_URL", "server url"),
@@ -1123,27 +1056,13 @@ mod tests {
         cookie_file: Some("cookie file".into()),
         data_dir: Some("/data/dir".into()),
         height_limit: Some(3),
-        hidden: Some(
-          vec![
-            "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0"
-              .parse()
-              .unwrap(),
-            "703e5f7c49d82aab99e605af306b9a30e991e57d42f982908a962a81ac439832i0"
-              .parse()
-              .unwrap()
-          ]
-          .into_iter()
-          .collect()
-        ),
         http_port: Some(8080),
         index: Some("index".into()),
         index_addresses: true,
         index_cache_size: Some(4),
-        index_runes: true,
         index_sats: true,
         index_transactions: true,
         integration_test: true,
-        no_index_inscriptions: true,
         server_password: Some("server password".into()),
         server_url: Some("server url".into()),
         server_username: Some("server username".into()),
@@ -1173,12 +1092,10 @@ mod tests {
           "--height-limit=3",
           "--index-addresses",
           "--index-cache-size=4",
-          "--index-runes",
           "--index-sats",
           "--index-transactions",
           "--index=index",
           "--integration-test",
-          "--no-index-inscriptions",
           "--server-password=server password",
           "--server-username=server username",
         ])
@@ -1199,16 +1116,13 @@ mod tests {
         cookie_file: Some("cookie file".into()),
         data_dir: Some("/data/dir".into()),
         height_limit: Some(3),
-        hidden: None,
         http_port: None,
         index: Some("index".into()),
         index_addresses: true,
         index_cache_size: Some(4),
-        index_runes: true,
         index_sats: true,
         index_transactions: true,
         integration_test: true,
-        no_index_inscriptions: true,
         server_password: Some("server password".into()),
         server_url: None,
         server_username: Some("server username".into()),

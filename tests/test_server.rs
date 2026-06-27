@@ -2,7 +2,7 @@ use {
   super::*,
   axum_server::Handle,
   bitcoincore_rpc::{Auth, Client, RpcApi},
-  ord::{Index, parse_ord_server_args},
+  lord::{Index, parse_ord_server_args},
   reqwest::blocking::Response,
   std::net::SocketAddr,
   sysinfo::System,
@@ -12,6 +12,8 @@ pub(crate) struct TestServer {
   client: Client,
   ord_server_handle: Handle<SocketAddr>,
   port: u16,
+  server_password: Option<String>,
+  server_username: Option<String>,
   #[allow(unused)]
   tempdir: TempDir,
 }
@@ -37,7 +39,7 @@ impl TestServer {
     fs::write(&cookiefile, "username:password").unwrap();
 
     let (settings, server) = parse_ord_server_args(&format!(
-      "ord --bitcoin-rpc-url {} --cookie-file {} --bitcoin-data-dir {} --datadir {} {} server {} --http-port 0 --address 127.0.0.1",
+      "lord --bitcoin-rpc-url {} --cookie-file {} --bitcoin-data-dir {} --datadir {} {} server {} --http-port 0 --address 127.0.0.1",
       core.url(),
       cookiefile.to_str().unwrap(),
       tempdir.path().display(),
@@ -45,6 +47,10 @@ impl TestServer {
       ord_args.join(" "),
       ord_server_args.join(" "),
     ));
+
+    let credentials = settings
+      .credentials()
+      .map(|(username, password)| (username.to_string(), password.to_string()));
 
     let index = Arc::new(Index::open(&settings).unwrap());
     let ord_server_handle = Handle::new();
@@ -69,6 +75,8 @@ impl TestServer {
       client,
       ord_server_handle,
       port,
+      server_password: credentials.as_ref().map(|(_, password)| password.clone()),
+      server_username: credentials.map(|(username, _)| username),
       tempdir,
     }
   }
@@ -106,7 +114,7 @@ impl TestServer {
     &self,
     path: impl AsRef<str>,
     chain: Chain,
-    content: impl ord::templates::PageContent,
+    content: impl lord::templates::PageContent,
   ) {
     self.sync_server();
     let response = reqwest::blocking::get(self.url().join(path.as_ref()).unwrap()).unwrap();
@@ -118,9 +126,9 @@ impl TestServer {
       response.text().unwrap()
     );
 
-    let expected_response = ord::templates::PageHtml::new(
+    let expected_response = lord::templates::PageHtml::new(
       content,
-      Arc::new(ord::subcommand::server::ServerConfig {
+      Arc::new(lord::subcommand::server::ServerConfig {
         chain,
         domain: Some(System::host_name().unwrap()),
         ..Default::default()
@@ -151,7 +159,11 @@ impl TestServer {
 
   pub(crate) fn sync_server(&self) {
     let chain_block_count = self.client.get_block_count().unwrap() + 1;
-    let response = reqwest::blocking::get(self.url().join("/update").unwrap()).unwrap();
+    let mut request = reqwest::blocking::Client::new().get(self.url().join("/update").unwrap());
+    if let (Some(username), Some(password)) = (&self.server_username, &self.server_password) {
+      request = request.basic_auth(username, Some(password));
+    }
+    let response = request.send().unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert!(response.text().unwrap().parse::<u64>().unwrap() >= chain_block_count);
   }

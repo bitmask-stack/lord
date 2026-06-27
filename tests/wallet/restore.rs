@@ -1,4 +1,4 @@
-use {super::*, ord::subcommand::wallet::create};
+use {super::*, lord::subcommand::wallet::create};
 
 #[test]
 fn restore_generates_same_descriptors() {
