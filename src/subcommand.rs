@@ -1,5 +1,6 @@
 use super::*;
 
+pub mod commit;
 pub mod env;
 #[cfg(feature = "sats")]
 pub mod epochs;
@@ -48,6 +49,8 @@ pub(crate) enum Subcommand {
   Settings,
   #[command(about = "Content-addressed storage commands")]
   Storage(storage::Storage),
+  #[command(about = "OpenTimestamps commitment commands")]
+  Commit(commit::Commit),
   #[command(about = "Filepack manifest commands")]
   Filepack(filepack::Filepack),
   #[cfg(feature = "sats")]
@@ -88,6 +91,7 @@ impl Subcommand {
       }
       Self::Settings => settings::run(settings),
       Self::Storage(storage) => storage.run(settings),
+      Self::Commit(commit) => commit.run(settings),
       Self::Filepack(filepack) => filepack.run(settings),
       #[cfg(feature = "sats")]
       Self::Subsidy(subsidy) => subsidy.run(),

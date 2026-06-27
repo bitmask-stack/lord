@@ -8,6 +8,7 @@ pub(super) enum ServerError {
     accept_encoding: AcceptEncoding,
     content_encoding: HeaderValue,
   },
+  Forbidden(String),
   Gone(String),
   NotFound(String),
 }
@@ -45,6 +46,7 @@ impl IntoResponse for ServerError {
 
         (StatusCode::NOT_ACCEPTABLE, message).into_response()
       }
+      Self::Forbidden(message) => (StatusCode::FORBIDDEN, message).into_response(),
       Self::Gone(message) => (
         StatusCode::GONE,
         [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],

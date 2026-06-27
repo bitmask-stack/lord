@@ -85,6 +85,10 @@ impl TestServer {
     format!("http://127.0.0.1:{}", self.port).parse().unwrap()
   }
 
+  pub(crate) fn data_dir(&self) -> PathBuf {
+    self.tempdir.path().to_path_buf()
+  }
+
   #[track_caller]
   pub(crate) fn assert_response_regex(&self, path: impl AsRef<str>, regex: impl AsRef<str>) {
     self.sync_server();

@@ -85,6 +85,7 @@ fn removed_routes_return_410_gone() {
       format!("/content/{INSCRIPTION_ID}"),
       "inscription content is not available in lord",
     ),
+    // `/content/{64-hex}` serves commitments; inscription IDs still 410.
     (
       format!("/metadata/{INSCRIPTION_ID}"),
       "inscription metadata is not available in lord",
@@ -367,4 +368,34 @@ fn cardinal_routes_return_404_not_410() {
   }
 
   assert_not_found(server.request(format!("/output/{TXID}:99")));
+}
+
+#[test]
+fn commitment_routes_work_and_inscription_content_stays_gone() {
+  let core = mockcore::spawn();
+  let server = TestServer::spawn_with_args(&core, &[]);
+
+  let data_dir = server.data_dir();
+
+  let encoded = CommandBuilder::new("storage encode route.txt --format c12")
+    .data_dir(&data_dir)
+    .write("route.txt", b"removed routes commitment test")
+    .stdout_regex(".*")
+    .run_and_deserialize_output::<lord_storage::EncodeResult>();
+
+  CommandBuilder::new(format!("commit timestamp {} --dry-run", encoded.bao_root))
+    .data_dir(&data_dir)
+    .stdout_regex(".*")
+    .run_and_extract_stdout();
+
+  let detail = server.request(format!("/commitment/{}", encoded.bao_root));
+  assert_eq!(detail.status(), StatusCode::OK);
+
+  let list = server.request("/commitments");
+  assert_eq!(list.status(), StatusCode::OK);
+
+  assert_gone(
+    server.request(format!("/content/{INSCRIPTION_ID}")),
+    "inscription content is not available in lord",
+  );
 }

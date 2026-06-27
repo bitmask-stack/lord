@@ -1,8 +1,15 @@
 use {super::*, boilerplate::Boilerplate};
 
 pub(crate) use {
-  crate::subcommand::server::ServerConfig, address::AddressHtml, block::BlockHtml, clock::ClockSvg,
-  home::HomeHtml, input::InputHtml, output::OutputHtml, satscard::SatscardHtml,
+  crate::subcommand::server::ServerConfig,
+  address::AddressHtml,
+  block::BlockHtml,
+  clock::ClockSvg,
+  commitment::{CommitmentHtml, CommitmentListItem, CommitmentsHtml},
+  home::HomeHtml,
+  input::InputHtml,
+  output::OutputHtml,
+  satscard::SatscardHtml,
 };
 
 #[cfg(feature = "sats")]
@@ -14,6 +21,7 @@ pub mod address;
 pub mod block;
 pub mod blocks;
 mod clock;
+pub mod commitment;
 mod home;
 mod input;
 pub mod output;

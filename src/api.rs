@@ -132,3 +132,32 @@ pub struct AddressInfo {
   pub outputs: Vec<OutPoint>,
   pub sat_balance: u64,
 }
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct CommitmentInfo {
+  pub bao_root: String,
+  pub carbonado_path: String,
+  pub format: u8,
+  pub visibility: String,
+  pub layout: String,
+  pub filepack_fp: Option<String>,
+  pub created_at: u64,
+  pub ots_proof_path: Option<String>,
+  pub ots_order_key: Option<String>,
+  pub timestamped: bool,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct CommitmentListItem {
+  pub bao_root: String,
+  pub ots_order_key: String,
+  pub carbonado_path: String,
+  pub format: u8,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct CommitmentsPage {
+  pub entries: Vec<CommitmentListItem>,
+  pub page: usize,
+  pub total_pages: usize,
+}

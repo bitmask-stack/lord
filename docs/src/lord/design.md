@@ -1,8 +1,9 @@
 Lord Design Document
 ====================
 
-> **Status:** Design reference — Phase 0 foundation in progress (PR1a–PR1d complete:
-> inscription/rune removal, heed3 index, heed3 wallet, slim server + `sats` feature).
+> **Status:** Design reference — Phase 0 foundation in progress (PR1a–PR3 complete:
+> inscription/rune removal, heed3 index, heed3 wallet, slim server + `sats` feature,
+> Carbonado storage, OpenTimestamps ordering, breccia append log).
 > See [implementation notes](implementation.md) for what is implemented today.  
 > This document captures the intended design for **lord**, a fork of [ord](https://github.com/ordinals/ord).
 

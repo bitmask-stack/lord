@@ -21,6 +21,9 @@ Lord stores the cardinal block index as a heed3 LMDB environment per chain:
     data.mdb
     lock.mdb
     master.key             # 32-byte symmetric key (odd formats; mode 0600)
+  ots/                     # detached OpenTimestamps proofs ({bao_root_hex}.ots)
+  breccia/                 # append-only global commitment log
+    global.breccia
   {chain}/                 # signet, regtest, testnet3, testnet4
     index/                 # heed3 LMDB env root (cardinal index)
       data.mdb
@@ -36,6 +39,8 @@ Lord stores the cardinal block index as a heed3 LMDB environment per chain:
     carbonado/
     filepack/
     storage/
+    ots/
+    breccia/
 ```
 
 The default index path is `{data_dir}/index` on mainnet and
@@ -65,7 +70,7 @@ Lord uses **two independent schema version namespaces**:
 |-----------|----------|---------|
 | **Lord index schema** | heed3 `STATISTIC_TO_COUNT`, key `0` | Cardinal index layout version (currently **35**) |
 | **Lord wallet schema** | heed3 `STATISTIC_TO_COUNT`, key `0` in `wallets/<name>/` | Wallet metadata layout version (currently **2**) |
-| **Lord storage schema** | heed3 `STATISTIC_TO_COUNT`, key `0` in `storage/` | Commitment metadata layout version (currently **1**) |
+| **Lord storage schema** | heed3 `STATISTIC_TO_COUNT`, key `0` in `storage/` | Commitment metadata layout version (currently **2**) |
 | **lord-db `SCHEMA_VERSION`** | heed3 `metadata` database, key `schema_version` | Gates `LordEnv` named-database layouts and rkyv record migrations |
 
 These must not be conflated. Bumping `lord-db::SCHEMA_VERSION` rejects incompatible LMDB environments with an actionable error; it does **not** validate or migrate the cardinal index statistic at key `0`.
@@ -166,16 +171,17 @@ index and wallet stores. It holds:
 
 | Database | Key | Value | Notes |
 |----------|-----|-------|-------|
-| `STATISTIC_TO_COUNT` | `u64` BE | `u64` BE | Storage schema version at key `0` (currently **1**) |
+| `STATISTIC_TO_COUNT` | `u64` BE | `u64` BE | Storage schema version at key `0` (currently **2**) |
 | `COMMITMENT_META` | `bao_root` (32 bytes) | `CommitmentMeta` (rkyv) | Metadata pointers only |
+| `COMMITMENT_ORDER` | `ots_order_key` (bytes) | `bao_root` (32 bytes) | Sorted explorer/CLI list index |
 
 `lord-db::LordEnv` also stores its own `metadata.schema_version` gate for the
 environment wrapper; do not conflate that with the storage statistic at key `0`.
 
-**PR3 reconciliation:** HTTP commitment explorer routes (`/commitment/{bao_root}`)
-will read from this same `storage/` env and `carbonado/` blobs. No separate
-`commitments/` database is planned; `COMMITMENT_META` remains the canonical
-metadata table.
+HTTP commitment explorer routes (`/commitment/{bao_root}`, `/commitments`) read
+from this same `storage/` env, `COMMITMENT_ORDER`, and `carbonado/` blobs. No
+separate `commitments/` database is planned; `COMMITMENT_META` remains the
+canonical metadata table.
 
 **No blob bytes in LMDB** — only `CommitmentMeta` rkyv records in
 `COMMITMENT_META` keyed by `bao_root` bytes. Carbonado files are written
@@ -192,6 +198,8 @@ atomically (temp + rename after LMDB commit).
 | `layout` | `Inboard` / `Outboard` | Outboard writes `{bao_root}.plain` for public formats |
 | `filepack_fp` | `Option<String>` | Set by `lord filepack create` (single-valued; see below) |
 | `created_at` | `u64` | Unix timestamp |
+| `ots_proof_path` | `Option<String>` | Relative path under `{data_dir}/ots/` (PR3) |
+| `ots_order_key` | `Option<Vec<u8>>` | BFS OTS merkle order key (PR3) |
 
 `filepack_fp` records **at most one** filepack membership per commitment. If a
 file already belongs to one filepack and is included in another, the field is
@@ -260,6 +268,94 @@ cargo test --test integration storage
 cargo test -p lord-db --lib
 cargo fmt --check
 cargo clippy -p lord -p lord-db -p lord-storage -- -D warnings
+just forbid
+just ci
+```
+
+PR3 (complete): commitment, OTS ordering, breccia
+------------------------------------------------
+
+OpenTimestamps commitment ordering, breccia append log, and commitment explorer
+routes live in `crates/lord-commit` and are wired into the `lord` binary.
+
+### CLI
+
+```text
+lord commit timestamp <bao_root> [--dry-run] [--calendar-url URL]
+lord commit verify <bao_root>
+lord commit list
+```
+
+`lord commit timestamp` requires an existing `CommitmentMeta` from
+`lord storage encode`. `--dry-run` builds a local stub OTS proof for tests
+without contacting a calendar server.
+
+### On-disk layout (additions)
+
+| Layer | Path | Backend |
+|-------|------|---------|
+| OTS proofs | `{data_dir}/ots/{bao_root_hex}.ots` | Detached OTS proof files (not in LMDB) |
+| Breccia log | `{data_dir}/breccia/global.breccia` | Append-only bincode `CommitmentEntry` blobs |
+
+### `storage/` schema version 2
+
+Opening a schema **1** database migrates in place: each `CommitmentMetaV1` record
+is rewritten with `ots_proof_path` and `ots_order_key` set to `None`, then the
+storage statistic at key `0` is bumped to **2**. Schema **0** or versions newer
+than **2** are rejected.
+
+`COMMITMENT_ORDER` maps `ots_order_key` bytes → `bao_root` for sorted
+`lord commit list` and `/commitments` explorer pages.
+
+### OTS order key (BFS left-to-right)
+
+Canonical order is derived from the OpenTimestamps proof tree:
+
+1. Model each `Fork` as an ordered list of child subtrees (left-to-right).
+2. Breadth-first traverse: root, then level 1 left-to-right, then level 2, …
+3. Find the first `Attestation` leaf; its BFS index becomes the order key
+   (big-endian `u64` bytes).
+4. Compare commitments by lexicographic order on those bytes.
+
+Stub proofs built by `--dry-run` use a deterministic fork layout keyed off the
+`bao_root` so integration tests get stable ordering without calendar network
+access.
+
+### `CommitmentEntry` (breccia blob)
+
+Bincode-serialized struct appended to `global.breccia`:
+
+| Field | Type |
+|-------|------|
+| `bao_root` | `[u8; 32]` |
+| `ots_order_key` | `Vec<u8>` |
+| `timestamped_at` | `u64` |
+| `carbonado_path` | `String` |
+
+### Explorer routes
+
+| Route | Behavior |
+|-------|----------|
+| `/commitment/{bao_root}` | HTML commitment detail (metadata, OTS status, links) |
+| `/commitments`, `/commitments/{page}` | Paginated list ordered by `ots_order_key` |
+| `/content/{bao_root}` | Stream public carbonado bytes (403 for private; PR3 minimal) |
+| `/r/commitment/{bao_root}`, `/r/commitments`, `/r/commitments/{page}` | JSON API when enabled |
+
+`fallback` / `search`: 64-hex `bao_root` queries that match a stored commitment
+redirect to `/commitment/{bao_root}` (block/tx routing unchanged). Inscription
+and rune queries remain **410 Gone**.
+
+### Exit criteria verified
+
+```bash
+cargo build --release
+cargo test -p lord-commit --lib
+cargo test -p lord-storage --lib
+cargo test -p lord --lib
+cargo test --test integration commit
+cargo test --tests
+cargo fmt --check
+cargo clippy -p lord -p lord-db -p lord-storage -p lord-commit -- -D warnings
 just forbid
 just ci
 ```
@@ -382,8 +478,9 @@ sat-specific CLI/server code. Runtime sat indexing still requires the
 
 ### Root crate dependencies
 
-`lord-db` and `lord-storage` are wired as root dependencies. `carbonado` is a path
-dependency via `lord-storage` (`../carbonado` sibling crate).
+`lord-db`, `lord-storage`, and `lord-commit` are wired as root dependencies.
+`carbonado` is a path dependency via `lord-storage` (`../carbonado` sibling crate).
+`opentimestamps` is pulled in via `lord-commit` for proof parse/serialize.
 
 ### Release tooling
 

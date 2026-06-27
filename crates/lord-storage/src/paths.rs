@@ -31,6 +31,18 @@ impl StoragePaths {
     self.data_dir.join("filepack")
   }
 
+  pub fn ots_dir(&self) -> PathBuf {
+    self.data_dir.join("ots")
+  }
+
+  pub fn breccia_dir(&self) -> PathBuf {
+    self.data_dir.join("breccia")
+  }
+
+  pub fn breccia_log_path(&self) -> PathBuf {
+    self.breccia_dir().join("global.breccia")
+  }
+
   pub fn master_key_path(&self) -> PathBuf {
     self.storage_dir().join("master.key")
   }

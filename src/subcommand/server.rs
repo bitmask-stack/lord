@@ -36,6 +36,7 @@ pub use server_config::ServerConfig;
 
 mod accept_encoding;
 mod accept_json;
+mod commitment;
 mod error;
 pub mod query;
 mod r;
@@ -207,7 +208,6 @@ impl Server {
         .route("/item/{inscription_id}", get(removed::item_gone))
         .route("/decode", get(removed::decode_gone))
         .route("/decode/{txid}", get(removed::decode_gone))
-        .route("/content/{inscription_id}", get(removed::content_gone))
         .route("/metadata/{inscription_id}", get(removed::metadata_gone))
         .route("/feed.xml", get(removed::feed_gone))
         .route(
@@ -246,6 +246,13 @@ impl Server {
           "/r/sat/{sat_number}/at/{index}/content",
           get(removed::recursive_sat_content_gone),
         )
+        .route("/commitment/{bao_root}", get(commitment::commitment_detail))
+        .route("/commitments", get(commitment::commitments_list))
+        .route(
+          "/commitments/{page}",
+          get(commitment::commitments_list_paginated),
+        )
+        .route("/content/{bao_root}", get(commitment::content))
         .route("/", get(Self::home))
         .route("/address/{address}", get(Self::address))
         .route("/block/{query}", get(Self::block))
@@ -292,7 +299,16 @@ impl Server {
         .route("/r/blockinfo/{query}", get(r::blockinfo))
         .route("/r/blocktime", get(r::blocktime_string))
         .route("/r/tx/{txid}", get(r::tx))
-        .route("/r/utxo/{outpoint}", get(r::utxo));
+        .route("/r/utxo/{outpoint}", get(r::utxo))
+        .route(
+          "/r/commitment/{bao_root}",
+          get(commitment::commitment_detail),
+        )
+        .route("/r/commitments", get(commitment::commitments_list))
+        .route(
+          "/r/commitments/{page}",
+          get(commitment::commitments_list_paginated),
+        );
 
       #[cfg(feature = "sats")]
       let router = router
@@ -569,13 +585,21 @@ impl Server {
     })
   }
 
-  async fn fallback(Extension(index): Extension<Arc<Index>>, uri: Uri) -> ServerResult<Response> {
+  async fn fallback(
+    Extension(index): Extension<Arc<Index>>,
+    Extension(settings): Extension<Arc<Settings>>,
+    uri: Uri,
+  ) -> ServerResult<Response> {
     task::block_in_place(|| {
       let path = urlencoding::decode(uri.path().trim_matches('/'))
         .map_err(|err| ServerError::BadRequest(err.to_string()))?;
 
       if re::INSCRIPTION_ID.is_match(&path) {
         return Ok(removed::inscription_path_gone());
+      }
+
+      if let Some(bao_root) = commitment::is_bao_root_query(&settings, &path)? {
+        return Ok(commitment::commitment_redirect(&bao_root).into_response());
       }
 
       #[cfg(feature = "sats")]
@@ -1060,24 +1084,34 @@ impl Server {
 
   async fn search_by_query(
     Extension(index): Extension<Arc<Index>>,
+    Extension(settings): Extension<Arc<Settings>>,
     Query(search): Query<Search>,
   ) -> ServerResult<Redirect> {
-    Self::search(index, search.query).await
+    Self::search(index, settings, search.query).await
   }
 
   async fn search_by_path(
     Extension(index): Extension<Arc<Index>>,
+    Extension(settings): Extension<Arc<Settings>>,
     Path(search): Path<Search>,
   ) -> ServerResult<Redirect> {
-    Self::search(index, search.query).await
+    Self::search(index, settings, search.query).await
   }
 
-  async fn search(index: Arc<Index>, query: String) -> ServerResult<Redirect> {
+  async fn search(
+    index: Arc<Index>,
+    settings: Arc<Settings>,
+    query: String,
+  ) -> ServerResult<Redirect> {
     task::block_in_place(|| {
       let query = query.trim();
 
       if re::INSCRIPTION_ID.is_match(query) {
         return removed::inscription_query_gone();
+      }
+
+      if let Some(bao_root) = commitment::is_bao_root_query(&settings, query)? {
+        return Ok(commitment::commitment_redirect(&bao_root));
       }
 
       if re::RUNE_ID.is_match(query) || re::SPACED_RUNE.is_match(query) {

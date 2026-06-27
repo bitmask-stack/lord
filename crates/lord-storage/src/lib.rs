@@ -18,8 +18,9 @@ pub use layout::{Layout, write_outboard_plaintext};
 pub use master_key::{
   MasterKeyOptions, load_master_key, load_or_create_master_key, master_key_for_verify,
 };
-pub use meta::{CommitmentMeta, Visibility};
+pub use atomic::atomic_write;
+pub use meta::{CommitmentMeta, CommitmentMetaV1, CommitmentMetaV2, Visibility};
 pub use paths::StoragePaths;
 pub use paths::validate_carbonado_relative_path;
-pub use store::StorageStore;
+pub use store::{SCHEMA_VERSION, StorageStore};
 pub use verify::{VerifyOptions, VerifyResult, verify_commitment};

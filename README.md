@@ -16,7 +16,9 @@ Lord persists data with **heed3 LMDB** environments via the in-repo
 | **Wallet metadata** | `{data_dir}/wallets/<name>/` | Per-wallet LMDB env (schema version 2) |
 | **Carbonado blobs** | `{data_dir}/carbonado/` | Encoded content-addressed files (`{bao_root}.c{NN}`) |
 | **Filepack** | `{data_dir}/filepack/{fingerprint}/` | Directory manifests with per-file Bao roots |
-| **Commitment metadata** | `{data_dir}/storage/` | heed3 LMDB pointers only (schema version 1) |
+| **Commitment metadata** | `{data_dir}/storage/` | heed3 LMDB pointers only (schema version 2) |
+| **OTS proofs** | `{data_dir}/ots/` | Detached `.ots` files per commitment |
+| **Breccia log** | `{data_dir}/breccia/global.breccia` | Append-only commitment history |
 
 There is **no migration** from legacy `index.redb` or `wallets/<name>.redb`
 files. Delete legacy redb files and re-index or recreate wallets. See
@@ -38,12 +40,19 @@ files. Delete legacy redb files and re-index or recreate wallets. See
 lord storage encode <file> --format c12 --layout inboard
 lord storage verify <bao_root_hex> --sample-rate 8
 lord filepack create <dir> --format c12
+lord commit timestamp <bao_root_hex> --dry-run
+lord commit verify <bao_root_hex>
+lord commit list
 ```
 
 `--format` accepts `12` or `c12` (c0..c15).
 
-Future phases add OpenTimestamps, breccia indexing, and the storage market
-described in the [Lord Design Document](docs/src/lord/design.md).
+**Explorer commitment routes:** `/commitment/{bao_root}`, `/commitments`,
+`/content/{bao_root}` (public formats). JSON mirrors under `/r/commitment/*` and
+`/r/commitments/*` when the JSON API is enabled.
+
+Future phases add the storage market and Lightning integration described in the
+[Lord Design Document](docs/src/lord/design.md).
 
 ---
 

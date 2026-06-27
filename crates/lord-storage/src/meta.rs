@@ -14,6 +14,9 @@ pub struct CommitmentMeta {
   pub layout: Layout,
   pub filepack_fp: Option<String>,
   pub created_at: u64,
+  pub ots_proof_path: Option<String>,
+  pub ots_order_key: Option<Vec<u8>>,
+  pub timestamped_at: Option<u64>,
 }
 
 #[derive(
@@ -51,6 +54,76 @@ impl CommitmentMeta {
       layout,
       filepack_fp: None,
       created_at,
+      ots_proof_path: None,
+      ots_order_key: None,
+      timestamped_at: None,
+    }
+  }
+
+  /// True when an OTS proof and order key are both recorded.
+  pub fn is_timestamped(&self) -> bool {
+    self.ots_proof_path.is_some() && self.ots_order_key.is_some()
+  }
+}
+
+/// Pre-PR3 commitment metadata (schema version 1).
+#[derive(Archive, RkyvSerialize, RkyvDeserialize, Debug, Clone, PartialEq, Eq)]
+#[rkyv(derive(Debug, PartialEq, Eq))]
+pub struct CommitmentMetaV1 {
+  pub bao_root: [u8; 32],
+  pub carbonado_path: String,
+  pub format: u8,
+  pub visibility: Visibility,
+  pub layout: Layout,
+  pub filepack_fp: Option<String>,
+  pub created_at: u64,
+}
+
+impl From<CommitmentMetaV1> for CommitmentMeta {
+  fn from(value: CommitmentMetaV1) -> Self {
+    Self {
+      bao_root: value.bao_root,
+      carbonado_path: value.carbonado_path,
+      format: value.format,
+      visibility: value.visibility,
+      layout: value.layout,
+      filepack_fp: value.filepack_fp,
+      created_at: value.created_at,
+      ots_proof_path: None,
+      ots_order_key: None,
+      timestamped_at: None,
+    }
+  }
+}
+
+/// Pre-PR3 schema version 2 commitment metadata (no `timestamped_at`).
+#[derive(Archive, RkyvSerialize, RkyvDeserialize, Debug, Clone, PartialEq, Eq)]
+#[rkyv(derive(Debug, PartialEq, Eq))]
+pub struct CommitmentMetaV2 {
+  pub bao_root: [u8; 32],
+  pub carbonado_path: String,
+  pub format: u8,
+  pub visibility: Visibility,
+  pub layout: Layout,
+  pub filepack_fp: Option<String>,
+  pub created_at: u64,
+  pub ots_proof_path: Option<String>,
+  pub ots_order_key: Option<Vec<u8>>,
+}
+
+impl From<CommitmentMetaV2> for CommitmentMeta {
+  fn from(value: CommitmentMetaV2) -> Self {
+    Self {
+      bao_root: value.bao_root,
+      carbonado_path: value.carbonado_path,
+      format: value.format,
+      visibility: value.visibility,
+      layout: value.layout,
+      filepack_fp: value.filepack_fp,
+      created_at: value.created_at,
+      ots_proof_path: value.ots_proof_path,
+      ots_order_key: value.ots_order_key,
+      timestamped_at: None,
     }
   }
 }

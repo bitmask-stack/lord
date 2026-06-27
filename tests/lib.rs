@@ -58,6 +58,7 @@ macro_rules! assert_regex_match {
 }
 
 mod command_builder;
+mod commit;
 mod expected;
 mod test_server;
 

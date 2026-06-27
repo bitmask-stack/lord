@@ -90,6 +90,7 @@ pub(crate) struct CommandBuilder {
   stdin: Vec<u8>,
   stdout: bool,
   tempdir: Arc<TempDir>,
+  datadir: Option<PathBuf>,
 }
 
 impl CommandBuilder {
@@ -108,6 +109,7 @@ impl CommandBuilder {
       stdin: Vec::new(),
       stdout: true,
       tempdir: Arc::new(TempDir::new().unwrap()),
+      datadir: None,
     }
   }
 
@@ -193,6 +195,13 @@ impl CommandBuilder {
     Self { tempdir, ..self }
   }
 
+  pub(crate) fn data_dir(self, datadir: impl AsRef<Path>) -> Self {
+    Self {
+      datadir: Some(datadir.as_ref().to_path_buf()),
+      ..self
+    }
+  }
+
   pub(crate) fn command(&self) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_lord"));
 
@@ -225,6 +234,11 @@ impl CommandBuilder {
       command.env("ORD_INTEGRATION_TEST", "1");
     }
 
+    let data_dir = self
+      .datadir
+      .as_deref()
+      .unwrap_or_else(|| self.tempdir.path());
+
     command
       .stdin(Stdio::piped())
       .stdout(if self.stdout {
@@ -239,7 +253,7 @@ impl CommandBuilder {
       })
       .current_dir(&*self.tempdir)
       .arg("--datadir")
-      .arg(self.tempdir.path())
+      .arg(data_dir)
       .args(&args);
 
     command
