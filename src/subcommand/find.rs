@@ -13,12 +13,7 @@ pub struct Output {
   pub satpoint: SatPoint,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub struct FindRangeOutput {
-  pub start: u64,
-  pub size: u64,
-  pub satpoint: SatPoint,
-}
+pub use crate::index::FindRangeOutput;
 
 impl Find {
   pub(crate) fn run(self, settings: Settings) -> SubcommandResult {

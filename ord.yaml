@@ -1,7 +1,9 @@
 # example config (ord compatibility)
-
+#
 # Prefer lord.yaml for new deployments. Settings still probes ord.yaml by default;
 # see docs/src/lord/implementation.md for the compatibility policy.
+#
+# Wallet path: {data_dir}/wallets/<name>/ (heed3 LMDB directory, not <name>.redb)
 
 # see `lord --help` for setting documentation
 
@@ -16,11 +18,10 @@ config_dir: /var/lib/ord
 cookie_file: /var/lib/bitcoin/.cookie
 data_dir: /var/lib/ord
 height_limit: 1000
-index: /var/lib/ord/index.redb
+index: /var/lib/ord/index
 index_addresses: true
 index_cache_size: 1000000000
 index_sats: true
-index_transactions: true
 integration_test: true
 server_password: bar
 server_url: http://localhost:8888

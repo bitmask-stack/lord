@@ -23,11 +23,13 @@ pub enum SnafuError {
     source: bitcoin::transaction::ParseOutPointError,
     input: String,
   },
+  #[cfg(feature = "sats")]
   #[snafu(display("Failed to parse sat `{}`", input))]
   SatParse {
     source: ordinals::sat::Error,
     input: String,
   },
+  #[cfg(feature = "sats")]
   #[snafu(display("Failed to parse sat point `{}`", input))]
   SatPointParse {
     source: ordinals::sat_point::Error,

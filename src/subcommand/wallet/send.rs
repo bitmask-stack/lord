@@ -6,6 +6,7 @@ pub(crate) struct Send {
   pub(crate) dry_run: bool,
   #[arg(long, help = "Use fee rate of <FEE_RATE> sats/vB")]
   fee_rate: FeeRate,
+  #[cfg(feature = "sats")]
   #[arg(
     long,
     help = "Target <AMOUNT> postage with sent satoshis. [default: 10000 sat]",
@@ -40,12 +41,14 @@ impl Send {
       Outgoing::Amount(amount) => {
         wallet.create_unsigned_send_amount_transaction(address, amount, self.fee_rate)?
       }
+      #[cfg(feature = "sats")]
       Outgoing::SatPoint(satpoint) => wallet.create_unsigned_send_satpoint_transaction(
         address,
         satpoint,
         self.postage,
         self.fee_rate,
       )?,
+      #[cfg(feature = "sats")]
       Outgoing::Sat(sat) => wallet.create_unsigned_send_satpoint_transaction(
         address,
         wallet.find_sat_in_outputs(sat)?,

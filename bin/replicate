@@ -8,8 +8,8 @@ for host in alpha bravo; do
   rsync \
     --archive \
     --progress \
-    /var/lib/lord/index.redb \
-    root@$host.ordinals.net:/var/lib/lord/index.redb.new
+    /var/lib/lord/index/ \
+    root@$host.ordinals.net:/var/lib/lord/index.new/
 done
 
 systemctl restart lord

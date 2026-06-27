@@ -2,9 +2,11 @@ use {super::*, boilerplate::Boilerplate};
 
 pub(crate) use {
   crate::subcommand::server::ServerConfig, address::AddressHtml, block::BlockHtml, clock::ClockSvg,
-  home::HomeHtml, input::InputHtml, output::OutputHtml, rare::RareTxt, sat::SatHtml,
-  satscard::SatscardHtml,
+  home::HomeHtml, input::InputHtml, output::OutputHtml, satscard::SatscardHtml,
 };
+
+#[cfg(feature = "sats")]
+pub(crate) use {rare::RareTxt, sat::SatHtml};
 
 pub use {blocks::BlocksHtml, status::StatusHtml, transaction::TransactionHtml};
 
@@ -15,7 +17,9 @@ mod clock;
 mod home;
 mod input;
 pub mod output;
+#[cfg(feature = "sats")]
 mod rare;
+#[cfg(feature = "sats")]
 pub mod sat;
 mod satscard;
 pub mod status;

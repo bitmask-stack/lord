@@ -18,14 +18,11 @@ use {
   self::{
     arguments::Arguments,
     blocktime::Blocktime,
-    decimal::Decimal,
     deserialize_from_str::DeserializeFromStr,
     fund_raw_transaction::fund_raw_transaction,
-    into_u64::IntoU64,
     into_usize::IntoUsize,
     option_ext::OptionExt,
     outgoing::Outgoing,
-    representation::Representation,
     satscard::Satscard,
     settings::Settings,
     signer::Signer,
@@ -53,7 +50,13 @@ use {
   chrono::{DateTime, TimeZone, Utc},
   clap::{ArgGroup, Parser},
   error::{ResultExt, SnafuError},
-  ordinals::{Charm, Epoch, Height, Rarity, Sat, SatPoint},
+  ordinals::Height,
+};
+
+#[cfg(feature = "sats")]
+use ordinals::{Charm, Epoch, Rarity, Sat, SatPoint};
+
+use {
   regex::Regex,
   reqwest::{Url, header::HeaderMap},
   serde::{Deserialize, Deserializer, Serialize},
@@ -62,7 +65,7 @@ use {
   std::{
     backtrace::BacktraceStatus,
     cmp,
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     env,
     ffi::OsString,
     fmt::{self, Display, Formatter},
@@ -83,14 +86,13 @@ use {
   tokio::{runtime::Runtime, task},
 };
 
-pub use self::{
-  chain::Chain,
-  fee_rate::FeeRate,
-  index::Index,
-  object::Object,
-  options::Options,
-  wallet::transaction_builder::{Target, TransactionBuilder},
-};
+pub use self::{chain::Chain, fee_rate::FeeRate, index::Index, options::Options};
+
+#[cfg(feature = "sats")]
+pub use wallet::transaction_builder::{Target, TransactionBuilder};
+
+#[cfg(feature = "sats")]
+pub use self::object::Object;
 
 #[cfg(test)]
 #[macro_use]
@@ -112,11 +114,13 @@ pub mod index;
 mod into_u64;
 mod into_usize;
 mod macros;
+#[cfg(feature = "sats")]
 mod object;
 mod option_ext;
 pub mod options;
 pub mod outgoing;
 mod re;
+#[cfg(feature = "sats")]
 mod representation;
 mod satscard;
 pub mod settings;

@@ -11,6 +11,21 @@ fi
   --glob '!bin/forbid' \
   --glob '!docs/src/bounty/frequency.tsv' \
   --glob '!docs/po/*' \
+  --glob '!docs/src/lord/design.md' \
   --ignore-case \
   'dbg!|fixme|todo|xxx' \
   .
+
+! rg \
+  --glob '*.rs' \
+  --glob '!target/**' \
+  'redb::|use redb' \
+  src/ \
+  crates/
+
+! rg \
+  --glob 'Cargo.toml' \
+  --glob '!target/**' \
+  '^redb\s*=' \
+  Cargo.toml \
+  crates/

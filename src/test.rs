@@ -1,8 +1,11 @@
 pub(crate) use {
-  super::*, bitcoin::WPubkeyHash, mockcore::TransactionTemplate, ordinals::COIN_VALUE,
+  super::*, bitcoin::WPubkeyHash, mockcore::TransactionTemplate,
   pretty_assertions::assert_eq as pretty_assert_eq, std::iter, tempfile::TempDir,
   unindent::Unindent,
 };
+
+#[cfg(feature = "sats")]
+pub(crate) use ordinals::COIN_VALUE;
 
 pub(crate) fn txid(n: u32) -> Txid {
   let hex = format!("{n:x}");
@@ -21,6 +24,7 @@ pub(crate) fn outpoint(n: u32) -> OutPoint {
   }
 }
 
+#[cfg(feature = "sats")]
 pub(crate) fn satpoint(n: u32, offset: u64) -> SatPoint {
   SatPoint {
     offset,

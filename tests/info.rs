@@ -1,5 +1,6 @@
 use {super::*, lord::subcommand::index::info::TransactionsOutput};
 
+#[cfg(feature = "sats")]
 #[test]
 fn json_with_satoshi_index() {
   let core = mockcore::spawn();
@@ -17,7 +18,7 @@ fn json_with_satoshi_index() {
   "branch_pages": \d+,
   "fragmented_bytes": \d+,
   "index_file_size": \d+,
-  "index_path": ".*\.redb",
+  "index_path": ".*/index",
   "leaf_pages": \d+,
   "metadata_bytes": \d+,
   "outputs_traversed": 1,
@@ -29,6 +30,10 @@ fn json_with_satoshi_index() {
   "transactions": \[
     \{
       "starting_block_count": 0,
+      "starting_timestamp": \d+
+    \},
+    \{
+      "starting_block_count": 1,
       "starting_timestamp": \d+
     \}
   \],
@@ -55,7 +60,7 @@ fn json_without_satoshi_index() {
   "branch_pages": \d+,
   "fragmented_bytes": \d+,
   "index_file_size": \d+,
-  "index_path": ".*\.redb",
+  "index_path": ".*/index",
   "leaf_pages": \d+,
   "metadata_bytes": \d+,
   "outputs_traversed": 0,
@@ -67,6 +72,10 @@ fn json_without_satoshi_index() {
   "transactions": \[
     \{
       "starting_block_count": 0,
+      "starting_timestamp": \d+
+    \},
+    \{
+      "starting_block_count": 1,
       "starting_timestamp": \d+
     \}
   \],
@@ -89,7 +98,8 @@ fn transactions() {
     .core(&core)
     .run_and_deserialize_output::<Vec<TransactionsOutput>>();
 
-  assert!(output.is_empty());
+  assert_eq!(output.len(), 1);
+  assert_eq!(output[0].count, 1);
 
   core.mine_blocks(10);
 

@@ -4,7 +4,6 @@ use {
     entry::{Entry, SatRange},
   },
   ordinals::varint::{self},
-  redb::TypeName,
   ref_cast::RefCast,
   std::ops::Deref,
 };
@@ -14,26 +13,7 @@ enum Sats<'a> {
   Value(u64),
 }
 
-/// A `UtxoEntry` stores the following information about an unspent transaction
-/// output, depending on the indexing options:
-///
-/// If `--index-sats`, the full list of sat ranges, stored as a varint followed
-/// by that many 11-byte sat range entries, otherwise the total output value
-/// stored as a varint.
-///
-/// If `--index-addresses`, the script pubkey stored as a varint followed by
-/// that many bytes of data.
-///
-/// If `--index-inscriptions`, the list of inscriptions stored as
-/// `(sequence_number, offset)`, with the sequence number stored as a u32 and
-/// the offset as a varint.
-///
-/// Note that the list of inscriptions doesn't need an explicit length, it
-/// continues until the end of the array.
-///
-/// A `UtxoEntry` is the read-only value stored in redb as a byte string. A
-/// `UtxoEntryBuf` is the writeable version, used for constructing new
-/// `UtxoEntry`s. A `ParsedUtxoEntry` is the parsed value.
+/// A `UtxoEntry` stores sat/value and optional script-pubkey data for an output.
 #[derive(Debug, RefCast)]
 #[repr(transparent)]
 pub struct UtxoEntry {
@@ -44,7 +24,6 @@ impl UtxoEntry {
   pub fn parse(&self, index: &Index) -> ParsedUtxoEntry {
     let sats;
     let mut script_pubkey = None;
-    let mut inscriptions = None;
 
     let mut offset = 0;
     if index.index_sats {
@@ -67,17 +46,11 @@ impl UtxoEntry {
 
       let script_pubkey_len: usize = script_pubkey_len.try_into().unwrap();
       script_pubkey = Some(&self.bytes[offset..offset + script_pubkey_len]);
-      offset += script_pubkey_len;
-    }
-
-    if index.index_inscriptions {
-      inscriptions = Some(&self.bytes[offset..self.bytes.len()]);
     }
 
     ParsedUtxoEntry {
       sats,
       script_pubkey,
-      inscriptions,
     }
   }
 
@@ -90,45 +63,9 @@ impl UtxoEntry {
   }
 }
 
-impl redb::Value for &UtxoEntry {
-  type SelfType<'a>
-    = &'a UtxoEntry
-  where
-    Self: 'a;
-
-  type AsBytes<'a>
-    = &'a [u8]
-  where
-    Self: 'a;
-
-  fn fixed_width() -> Option<usize> {
-    None
-  }
-
-  fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
-  where
-    Self: 'a,
-  {
-    UtxoEntry::ref_cast(data)
-  }
-
-  fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
-  where
-    Self: 'a,
-    Self: 'b,
-  {
-    &value.bytes
-  }
-
-  fn type_name() -> TypeName {
-    TypeName::new("lord::UtxoEntry")
-  }
-}
-
 pub struct ParsedUtxoEntry<'a> {
   sats: Sats<'a>,
   script_pubkey: Option<&'a [u8]>,
-  inscriptions: Option<&'a [u8]>,
 }
 
 impl<'a> ParsedUtxoEntry<'a> {
@@ -156,33 +93,6 @@ impl<'a> ParsedUtxoEntry<'a> {
   pub fn script_pubkey(&self) -> &'a [u8] {
     self.script_pubkey.unwrap()
   }
-
-  pub fn inscriptions(&self) -> &'a [u8] {
-    self.inscriptions.unwrap()
-  }
-
-  pub fn parse_inscriptions(&self) -> Vec<(u32, u64)> {
-    let inscriptions = self.inscriptions.unwrap();
-    let mut byte_offset = 0;
-    let mut parsed_inscriptions = Vec::new();
-
-    while byte_offset < inscriptions.len() {
-      let sequence_number = u32::from_le_bytes(
-        inscriptions[byte_offset..byte_offset + 4]
-          .try_into()
-          .unwrap(),
-      );
-      byte_offset += 4;
-
-      let (satpoint_offset, varint_len) = varint::decode(&inscriptions[byte_offset..]).unwrap();
-      let satpoint_offset = u64::try_from(satpoint_offset).unwrap();
-      byte_offset += varint_len;
-
-      parsed_inscriptions.push((sequence_number, satpoint_offset));
-    }
-
-    parsed_inscriptions
-  }
 }
 
 #[cfg(debug_assertions)]
@@ -209,8 +119,12 @@ impl UtxoEntryBuf {
     }
   }
 
+  pub(crate) fn to_vec(&self) -> Vec<u8> {
+    self.vec.clone()
+  }
+
   pub fn push_value(&mut self, value: u64, index: &Index) {
-    assert!(!index.index_sats);
+    assert!(!index.index_sats || !cfg!(feature = "sats"));
     varint::encode_to_vec(value.into(), &mut self.vec);
 
     #[cfg(debug_assertions)]
@@ -235,23 +149,6 @@ impl UtxoEntryBuf {
 
     #[cfg(debug_assertions)]
     self.advance_state(State::NeedScriptPubkey, State::Valid, index);
-  }
-
-  pub fn push_inscriptions(&mut self, inscriptions: &[u8], index: &Index) {
-    assert!(index.index_inscriptions);
-    self.vec.extend(inscriptions);
-
-    #[cfg(debug_assertions)]
-    self.advance_state(State::Valid, State::Valid, index);
-  }
-
-  pub fn push_inscription(&mut self, sequence_number: u32, satpoint_offset: u64, index: &Index) {
-    assert!(index.index_inscriptions);
-    self.vec.extend(sequence_number.to_le_bytes());
-    varint::encode_to_vec(satpoint_offset.into(), &mut self.vec);
-
-    #[cfg(debug_assertions)]
-    self.advance_state(State::Valid, State::Valid, index);
   }
 
   #[cfg(debug_assertions)]
@@ -282,11 +179,6 @@ impl UtxoEntryBuf {
       assert!(a_parsed.script_pubkey().is_empty());
       assert!(b_parsed.script_pubkey().is_empty());
       merged.push_script_pubkey(&[], index);
-    }
-
-    if index.index_inscriptions {
-      merged.push_inscriptions(a_parsed.inscriptions(), index);
-      merged.push_inscriptions(b_parsed.inscriptions(), index);
     }
 
     merged

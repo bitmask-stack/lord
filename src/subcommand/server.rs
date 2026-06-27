@@ -6,7 +6,7 @@ use {
   super::*,
   crate::templates::{
     AddressHtml, BlockHtml, BlocksHtml, ClockSvg, HomeHtml, InputHtml, OutputHtml, PageContent,
-    PageHtml, RareTxt, SatHtml, SatscardHtml, TransactionHtml,
+    PageHtml, SatscardHtml, TransactionHtml,
   },
   axum::{
     Router,
@@ -39,7 +39,11 @@ mod accept_json;
 mod error;
 pub mod query;
 mod r;
+mod removed;
 mod server_config;
+
+#[cfg(feature = "sats")]
+use crate::templates::{RareTxt, SatHtml};
 
 const MEBIBYTE: usize = 1 << 20;
 const PAGE_SIZE: usize = 100;
@@ -179,6 +183,69 @@ impl Server {
       };
 
       let router = Router::new()
+        .route("/inscription/{*rest}", get(removed::inscriptions_gone))
+        .route(
+          "/inscriptions",
+          get(removed::inscriptions_gone).post(removed::inscriptions_gone),
+        )
+        .route("/inscriptions/{*rest}", get(removed::inscriptions_gone))
+        .route("/rune/{rune}", get(removed::runes_gone))
+        .route("/runes", get(removed::runes_gone))
+        .route("/runes/{*rest}", get(removed::runes_gone))
+        .route("/collections", get(removed::collections_gone))
+        .route("/collections/{page}", get(removed::collections_gone))
+        .route("/galleries", get(removed::galleries_gone))
+        .route("/galleries/{*rest}", get(removed::galleries_gone))
+        .route("/gallery", get(removed::galleries_gone))
+        .route("/gallery/{*rest}", get(removed::galleries_gone))
+        .route("/offer", get(removed::offers_gone))
+        .route("/offers", get(removed::offers_gone))
+        .route("/offers/{*rest}", get(removed::offers_gone))
+        .route("/preview/{inscription_id}", get(removed::preview_gone))
+        .route("/children/{inscription_id}", get(removed::children_gone))
+        .route("/parents/{inscription_id}", get(removed::parents_gone))
+        .route("/item/{inscription_id}", get(removed::item_gone))
+        .route("/decode", get(removed::decode_gone))
+        .route("/decode/{txid}", get(removed::decode_gone))
+        .route("/content/{inscription_id}", get(removed::content_gone))
+        .route("/metadata/{inscription_id}", get(removed::metadata_gone))
+        .route("/feed.xml", get(removed::feed_gone))
+        .route(
+          "/r/children/{inscription_id}",
+          get(removed::recursive_children_gone),
+        )
+        .route(
+          "/r/children/{inscription_id}/{page}",
+          get(removed::recursive_children_gone),
+        )
+        .route(
+          "/r/children/{inscription_id}/inscriptions",
+          get(removed::recursive_children_gone),
+        )
+        .route(
+          "/r/inscription/{inscription_id}",
+          get(removed::recursive_inscription_gone),
+        )
+        .route(
+          "/r/parents/{inscription_id}",
+          get(removed::recursive_parents_gone),
+        )
+        .route(
+          "/r/parents/{inscription_id}/{page}",
+          get(removed::recursive_parents_gone),
+        )
+        .route(
+          "/r/parents/{inscription_id}/inscriptions",
+          get(removed::recursive_parents_gone),
+        )
+        .route(
+          "/r/sat/{sat_number}/at/{index}",
+          get(removed::recursive_sat_at_index_gone),
+        )
+        .route(
+          "/r/sat/{sat_number}/at/{index}/content",
+          get(removed::recursive_sat_content_gone),
+        )
         .route("/", get(Self::home))
         .route("/address/{address}", get(Self::address))
         .route("/block/{query}", get(Self::block))
@@ -188,13 +255,9 @@ impl Server {
         .route("/faq", get(Self::faq))
         .route("/favicon.ico", get(Self::favicon))
         .route("/input/{block}/{transaction}/{input}", get(Self::input))
-        .route("/ordinal/{sat}", get(Self::ordinal))
         .route("/output/{output}", get(Self::output))
         .route("/outputs", post(Self::outputs).layer(body_limit))
         .route("/outputs/{address}", get(Self::outputs_address))
-        .route("/rare.txt", get(Self::rare_txt))
-        .route("/sat/{sat}", get(Self::sat))
-        .route("/satpoint/{satpoint}", get(Self::satpoint))
         .route("/satscard", get(Self::satscard))
         .route("/search", get(Self::search_by_query))
         .route("/search/{*query}", get(Self::search_by_path))
@@ -203,6 +266,20 @@ impl Server {
         .route("/tx/{txid}", get(Self::transaction))
         .route("/install.sh", get(Self::install_script))
         .route("/update", get(Self::update));
+
+      #[cfg(feature = "sats")]
+      let router = router
+        .route("/ordinal/{sat}", get(Self::ordinal))
+        .route("/rare.txt", get(Self::rare_txt))
+        .route("/sat/{sat}", get(Self::sat))
+        .route("/satpoint/{satpoint}", get(Self::satpoint));
+
+      #[cfg(not(feature = "sats"))]
+      let router = router
+        .route("/ordinal/{sat}", get(Self::sats_unavailable))
+        .route("/rare.txt", get(Self::sats_unavailable))
+        .route("/sat/{sat}", get(Self::sats_unavailable))
+        .route("/satpoint/{satpoint}", get(Self::sats_unavailable));
 
       let router = router
         .route("/blockhash", get(r::blockhash_string))
@@ -214,10 +291,18 @@ impl Server {
         .route("/r/blockheight", get(r::blockheight_string))
         .route("/r/blockinfo/{query}", get(r::blockinfo))
         .route("/r/blocktime", get(r::blocktime_string))
-        .route("/r/sat/{sat_number}", get(r::sat))
-        .route("/r/sat/{sat_number}/{page}", get(r::sat_paginated))
         .route("/r/tx/{txid}", get(r::tx))
         .route("/r/utxo/{outpoint}", get(r::utxo));
+
+      #[cfg(feature = "sats")]
+      let router = router
+        .route("/r/sat/{sat_number}", get(r::sat))
+        .route("/r/sat/{sat_number}/{page}", get(r::sat_paginated));
+
+      #[cfg(not(feature = "sats"))]
+      let router = router
+        .route("/r/sat/{sat_number}", get(Self::sats_unavailable))
+        .route("/r/sat/{sat_number}/{page}", get(Self::sats_unavailable));
 
       let router = router
         .fallback(Self::fallback)
@@ -489,12 +574,22 @@ impl Server {
       let path = urlencoding::decode(uri.path().trim_matches('/'))
         .map_err(|err| ServerError::BadRequest(err.to_string()))?;
 
-      if re::INSCRIPTION_ID.is_match(&path) || re::INSCRIPTION_NUMBER.is_match(&path) {
-        return Ok(StatusCode::NOT_FOUND.into_response());
+      if re::INSCRIPTION_ID.is_match(&path) {
+        return Ok(removed::inscription_path_gone());
+      }
+
+      #[cfg(feature = "sats")]
+      if re::INSCRIPTION_NUMBER.is_match(&path) {
+        return Ok(Redirect::to(&format!("/sat/{path}")).into_response());
+      }
+
+      #[cfg(not(feature = "sats"))]
+      if re::INSCRIPTION_NUMBER.is_match(&path) {
+        return Ok(removed::inscription_path_gone());
       }
 
       if re::RUNE_ID.is_match(&path) || re::SPACED_RUNE.is_match(&path) {
-        return Ok(StatusCode::NOT_FOUND.into_response());
+        return Ok(removed::rune_path_gone());
       }
 
       let prefix = if re::OUTPOINT.is_match(&path) {
@@ -569,6 +664,11 @@ impl Server {
     )
   }
 
+  async fn sats_unavailable() -> ServerResult {
+    Err(ServerError::Gone(removed::SATS_UNAVAILABLE.into()))
+  }
+
+  #[cfg(feature = "sats")]
   async fn sat(
     Extension(server_config): Extension<Arc<ServerConfig>>,
     Extension(index): Extension<Arc<Index>>,
@@ -639,6 +739,7 @@ impl Server {
     })
   }
 
+  #[cfg(feature = "sats")]
   async fn ordinal(Path(sat): Path<String>) -> Redirect {
     Redirect::to(&format!("/sat/{sat}"))
   }
@@ -671,6 +772,7 @@ impl Server {
     })
   }
 
+  #[cfg(feature = "sats")]
   async fn satpoint(
     Extension(index): Extension<Arc<Index>>,
     Path(satpoint): Path<SatPoint>,
@@ -766,6 +868,7 @@ impl Server {
     })
   }
 
+  #[cfg(feature = "sats")]
   async fn rare_txt(Extension(index): Extension<Arc<Index>>) -> ServerResult<RareTxt> {
     task::block_in_place(|| Ok(RareTxt(index.rare_sat_satpoints()?)))
   }
@@ -973,12 +1076,22 @@ impl Server {
     task::block_in_place(|| {
       let query = query.trim();
 
-      if re::INSCRIPTION_ID.is_match(query) || re::INSCRIPTION_NUMBER.is_match(query) {
-        return Err(ServerError::NotFound("inscription not found".into()));
+      if re::INSCRIPTION_ID.is_match(query) {
+        return removed::inscription_query_gone();
       }
 
       if re::RUNE_ID.is_match(query) || re::SPACED_RUNE.is_match(query) {
-        return Err(ServerError::NotFound("rune not found".into()));
+        return removed::rune_query_gone();
+      }
+
+      #[cfg(feature = "sats")]
+      if re::INSCRIPTION_NUMBER.is_match(query) {
+        return Ok(Redirect::to(&format!("/sat/{query}")));
+      }
+
+      #[cfg(not(feature = "sats"))]
+      if re::INSCRIPTION_NUMBER.is_match(query) {
+        return removed::inscription_query_gone();
       }
 
       if re::HASH.is_match(query) {
@@ -1068,19 +1181,7 @@ impl Server {
     Redirect::to("https://docs.ordinals.com/faq")
   }
 
-  fn is_cardinal_output(index: &Index, outpoint: OutPoint) -> Result<bool> {
-    if let Some(inscriptions) = index.get_inscriptions_for_output(outpoint)?
-      && !inscriptions.is_empty()
-    {
-      return Ok(false);
-    }
-
-    if let Some(rune_balances) = index.get_rune_balances_for_output(outpoint)?
-      && !rune_balances.is_empty()
-    {
-      return Ok(false);
-    }
-
+  fn is_cardinal_output(_index: &Index, _outpoint: OutPoint) -> Result<bool> {
     Ok(true)
   }
 

@@ -8,10 +8,12 @@ impl Height {
     self.0
   }
 
+  #[cfg(feature = "sats")]
   pub fn subsidy(self) -> u64 {
     Epoch::from(self).subsidy()
   }
 
+  #[cfg(feature = "sats")]
   pub fn starting_sat(self) -> Sat {
     let epoch = Epoch::from(self);
     let epoch_starting_sat = epoch.starting_sat();
@@ -80,6 +82,7 @@ mod tests {
     assert!("foo".parse::<Height>().is_err());
   }
 
+  #[cfg(feature = "sats")]
   #[test]
   fn subsidy() {
     assert_eq!(Height(0).subsidy(), 5000000000);
@@ -89,6 +92,7 @@ mod tests {
     assert_eq!(Height(SUBSIDY_HALVING_INTERVAL + 1).subsidy(), 2500000000);
   }
 
+  #[cfg(feature = "sats")]
   #[test]
   fn starting_sat() {
     assert_eq!(Height(0).starting_sat(), 0);

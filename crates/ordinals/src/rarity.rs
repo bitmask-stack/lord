@@ -196,6 +196,8 @@ mod tests {
 
   #[test]
   fn supply() {
+    use std::collections::HashMap;
+
     let mut i = 0;
 
     let mut supply = HashMap::<Rarity, u64>::new();

@@ -26,6 +26,7 @@ impl Outputs {
         .ok()
         .map(|address| address.as_unchecked().clone());
 
+      #[cfg(feature = "sats")]
       let sat_ranges = if wallet.has_sat_index() && self.ranges {
         Some(
           wallet
@@ -37,6 +38,8 @@ impl Outputs {
       } else {
         None
       };
+      #[cfg(not(feature = "sats"))]
+      let sat_ranges = None;
 
       outputs.push(Output {
         address,

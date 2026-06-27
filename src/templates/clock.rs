@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(feature = "sats")]
 #[derive(Boilerplate)]
 pub(crate) struct ClockSvg {
   height: Height,
@@ -8,6 +9,7 @@ pub(crate) struct ClockSvg {
   second: f64,
 }
 
+#[cfg(feature = "sats")]
 impl ClockSvg {
   pub(crate) fn new(height: Height) -> Self {
     let min = height.min(Epoch::FIRST_POST_SUBSIDY.starting_height());
@@ -24,6 +26,33 @@ impl ClockSvg {
   }
 }
 
+#[cfg(not(feature = "sats"))]
+#[derive(Boilerplate)]
+pub(crate) struct ClockSvg {
+  height: Height,
+  hour: f64,
+  minute: f64,
+  second: f64,
+}
+
+#[cfg(not(feature = "sats"))]
+impl ClockSvg {
+  pub(crate) fn new(height: Height) -> Self {
+    const FIRST_POST_SUBSIDY_HEIGHT: u32 = 6_930_000;
+    let min = Height(height.0.min(FIRST_POST_SUBSIDY_HEIGHT));
+
+    Self {
+      height,
+      hour: f64::from(min.n() % FIRST_POST_SUBSIDY_HEIGHT) / f64::from(FIRST_POST_SUBSIDY_HEIGHT)
+        * 360.0,
+      minute: f64::from(min.n() % SUBSIDY_HALVING_INTERVAL) / f64::from(SUBSIDY_HALVING_INTERVAL)
+        * 360.0,
+      second: f64::from(height.period_offset()) / f64::from(DIFFCHANGE_INTERVAL) * 360.0,
+    }
+  }
+}
+
+#[cfg(feature = "sats")]
 #[cfg(test)]
 mod tests {
   use super::*;

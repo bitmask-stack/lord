@@ -1,4 +1,5 @@
 #![allow(clippy::type_complexity)]
+#![cfg_attr(not(feature = "sats"), allow(dead_code, unused_imports))]
 
 use {
   self::{command_builder::CommandBuilder, expected::Expected, test_server::TestServer},
@@ -17,7 +18,13 @@ use {
     wallet::ListDescriptorsResult,
   },
   mockcore::TransactionTemplate,
-  ordinals::{COIN_VALUE, Charm, Rarity, Sat, SatPoint},
+  ordinals::COIN_VALUE,
+};
+
+#[cfg(feature = "sats")]
+use ordinals::{Charm, Rarity, Sat, SatPoint};
+
+use {
   pretty_assertions::assert_eq as pretty_assert_eq,
   regex::Regex,
   reqwest::{StatusCode, Url},
@@ -54,19 +61,29 @@ mod command_builder;
 mod expected;
 mod test_server;
 
+#[cfg(feature = "sats")]
 mod epochs;
+#[cfg(feature = "sats")]
 mod find;
 
+mod index;
 mod info;
 mod json_api;
+#[cfg(feature = "sats")]
 mod list;
+mod no_redb;
+#[cfg(feature = "sats")]
 mod parse;
 mod removed_commands;
 mod removed_routes;
 mod server;
 mod settings;
+mod storage;
+#[cfg(feature = "sats")]
 mod subsidy;
+#[cfg(feature = "sats")]
 mod supply;
+#[cfg(feature = "sats")]
 mod traits;
 mod verify;
 mod version;
@@ -75,6 +92,7 @@ mod wallet;
 type Balance = lord::subcommand::wallet::balance::Output;
 type Create = lord::subcommand::wallet::create::Output;
 type Send = lord::subcommand::wallet::send::Output;
+#[cfg(feature = "sats")]
 type Supply = lord::subcommand::supply::Output;
 type Sweep = lord::subcommand::wallet::sweep::Output;
 
@@ -103,6 +121,7 @@ fn create_wallet(core: &mockcore::Handle, ord: &TestServer) {
     .run_and_extract_stdout();
 }
 
+#[cfg(feature = "sats")]
 fn sats(
   core: &mockcore::Handle,
   ord: &TestServer,

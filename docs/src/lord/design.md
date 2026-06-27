@@ -1,7 +1,8 @@
 Lord Design Document
 ====================
 
-> **Status:** Design reference — Phase 0 foundation is underway.  
+> **Status:** Design reference — Phase 0 foundation in progress (PR1a–PR1d complete:
+> inscription/rune removal, heed3 index, heed3 wallet, slim server + `sats` feature).
 > See [implementation notes](implementation.md) for what is implemented today.  
 > This document captures the intended design for **lord**, a fork of [ord](https://github.com/ordinals/ord).
 
@@ -49,7 +50,7 @@ Relationship to ord
 | Area | Notes |
 |------|-------|
 | **CLI** | Same command structure and ergonomics as ord where applicable |
-| **HTTP API** | Same API surface where applicable |
+| **HTTP API** | Cardinal explorer API preserved; removed inscription/rune routes return **410 Gone** (see [implementation notes](implementation.md#pr1d-complete-slim-server-api-compatibility-sats-feature)) |
 | **Core functionality** | Wallet, block explorer, Bitcoin Core integration, indexing infrastructure |
 
 ### Removed
@@ -67,6 +68,21 @@ Relationship to ord
 | Inscriptions (on-chain content commitment) | Carbonado v2 storage + OpenTimestamps commitment + breccia global index |
 | Runes (fungible tokens) | RGB (TODO) |
 | Sat ordinal ordering | OTS merkle-path + breadth-first timestamp commitment ordering |
+
+### Current persistence (Phase 0 — PR1b/PR1c)
+
+Until Carbonado and breccia land in later phases, lord persists local state with
+**heed3 LMDB** environments via the in-repo `lord-db` crate (heed3 + rkyv):
+
+| Store | Path | Schema version |
+|-------|------|----------------|
+| Cardinal index | `{data_dir}/index/` (mainnet) or `{data_dir}/{chain}/index/` | `STATISTIC_TO_COUNT` key `0` → **35** |
+| Wallet metadata | `{data_dir}/wallets/<name>/` | `STATISTIC_TO_COUNT` key `0` → **2** |
+
+There is **no migration** from legacy ord `index.redb` or `wallets/<name>.redb`
+files. Operators must delete legacy redb files and re-index or recreate wallets.
+See [implementation notes](implementation.md) for layout details and clean-break
+error messages.
 
 Storage: Carbonado v2
 ---------------------

@@ -1,0 +1,25 @@
+[package]
+name = "lord-storage"
+version = "0.1.0"
+description = "Carbonado blob storage, filepack manifests, and commitment metadata for Lord"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1.0.90"
+blake3 = "1.5"
+bao-tree = { package = "bao-tree", path = "../../../bao-tree" }
+carbonado = { path = "../../../carbonado" }
+getrandom = "0.2"
+hex.workspace = true
+heed3.workspace = true
+lord-db = { path = "../lord-db" }
+rand = "0.8"
+rkyv.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

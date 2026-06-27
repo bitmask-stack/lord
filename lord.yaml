@@ -1,4 +1,12 @@
 # example config
+#
+# Data layout (heed3 LMDB + Carbonado blobs):
+#   {data_dir}/index/              — cardinal block index (mainnet)
+#   {data_dir}/{chain}/index/      — cardinal block index (other chains)
+#   {data_dir}/wallets/<name>/     — per-wallet LMDB env (not <name>.redb)
+#   {data_dir}/carbonado/          — Carbonado blob files ({bao_root}.c{NN})
+#   {data_dir}/filepack/           — filepack manifest directories
+#   {data_dir}/storage/            — commitment metadata LMDB (no blob bytes)
 
 # see `lord --help` for setting documentation
 
@@ -13,11 +21,10 @@ config_dir: /var/lib/lord
 cookie_file: /var/lib/bitcoin/.cookie
 data_dir: /var/lib/lord
 height_limit: 1000
-index: /var/lib/lord/index.redb
+index: /var/lib/lord/index
 index_addresses: true
 index_cache_size: 1000000000
 index_sats: true
-index_transactions: true
 integration_test: true
 server_password: bar
 server_url: http://localhost:8888

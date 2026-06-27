@@ -1,4 +1,4 @@
-use super::*;
+use {super::*, crate::representation::Representation};
 
 #[derive(Debug, PartialEq, Clone, DeserializeFromStr, SerializeDisplay)]
 pub enum Object {

@@ -32,8 +32,7 @@
 //! expected.
 
 use {
-  super::*,
-  crate::index::InscriptionId,
+  super::{inscription_id::InscriptionId, *},
   std::cmp::{max, min},
 };
 

@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(feature = "sats")]
 #[test]
 fn send_on_mainnnet_works_with_wallet_named_foo() {
   let core = mockcore::spawn();
@@ -21,6 +22,7 @@ fn send_on_mainnnet_works_with_wallet_named_foo() {
   .run_and_deserialize_output::<Send>();
 }
 
+#[cfg(feature = "sats")]
 #[test]
 fn send_addresses_must_be_valid_for_network() {
   let core = mockcore::builder().build();
@@ -43,6 +45,7 @@ fn send_addresses_must_be_valid_for_network() {
   .run_and_extract_stdout();
 }
 
+#[cfg(feature = "sats")]
 #[test]
 fn send_on_mainnnet_works_with_wallet_named_ord() {
   let core = mockcore::builder().build();

@@ -8,10 +8,12 @@ pub mod balance;
 pub mod cardinals;
 pub mod create;
 pub mod dump;
+#[cfg(feature = "sats")]
 mod label;
 pub mod outputs;
 pub mod receive;
 pub mod restore;
+#[cfg(feature = "sats")]
 pub mod sats;
 pub mod send;
 pub mod sign;
@@ -46,6 +48,7 @@ pub(crate) enum Subcommand {
   Create(create::Create),
   #[command(about = "Dump wallet descriptors")]
   Dump,
+  #[cfg(feature = "sats")]
   #[command(about = "Export output labels")]
   Label,
   #[command(about = "List all unspent outputs in wallet")]
@@ -54,6 +57,7 @@ pub(crate) enum Subcommand {
   Receive(receive::Receive),
   #[command(about = "Restore wallet")]
   Restore(restore::Restore),
+  #[cfg(feature = "sats")]
   #[command(about = "List wallet satoshis")]
   Sats(sats::Sats),
   #[command(about = "Send bitcoin")]
@@ -94,9 +98,11 @@ impl WalletCommand {
       Subcommand::Cardinals => cardinals::run(wallet),
       Subcommand::Create(_) | Subcommand::Restore(_) => unreachable!(),
       Subcommand::Dump => dump::run(wallet),
+      #[cfg(feature = "sats")]
       Subcommand::Label => label::run(wallet),
       Subcommand::Outputs(outputs) => outputs.run(wallet),
       Subcommand::Receive(receive) => receive.run(wallet),
+      #[cfg(feature = "sats")]
       Subcommand::Sats(sats) => sats.run(wallet),
       Subcommand::Send(send) => send.run(wallet),
       Subcommand::Sign(sign) => sign.run(wallet),

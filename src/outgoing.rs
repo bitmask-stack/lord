@@ -3,7 +3,9 @@ use super::*;
 #[derive(Debug, PartialEq, Clone, DeserializeFromStr, SerializeDisplay)]
 pub enum Outgoing {
   Amount(Amount),
+  #[cfg(feature = "sats")]
   Sat(Sat),
+  #[cfg(feature = "sats")]
   SatPoint(SatPoint),
 }
 
@@ -11,7 +13,9 @@ impl Display for Outgoing {
   fn fmt(&self, f: &mut Formatter) -> fmt::Result {
     match self {
       Self::Amount(amount) => write!(f, "{}", amount.to_string().to_lowercase()),
+      #[cfg(feature = "sats")]
       Self::Sat(sat) => write!(f, "{}", sat.name()),
+      #[cfg(feature = "sats")]
       Self::SatPoint(satpoint) => satpoint.fmt(f),
     }
   }
@@ -41,17 +45,23 @@ impl FromStr for Outgoing {
       .unwrap()
     });
 
+    #[cfg(feature = "sats")]
     if re::SAT_NAME.is_match(input) {
-      Ok(Outgoing::Sat(
+      return Ok(Outgoing::Sat(
         input.parse().snafu_context(error::SatParse { input })?,
-      ))
-    } else if re::SATPOINT.is_match(input) {
-      Ok(Outgoing::SatPoint(
+      ));
+    }
+
+    #[cfg(feature = "sats")]
+    if re::SATPOINT.is_match(input) {
+      return Ok(Outgoing::SatPoint(
         input
           .parse()
           .snafu_context(error::SatPointParse { input })?,
-      ))
-    } else if AMOUNT.is_match(input) {
+      ));
+    }
+
+    if AMOUNT.is_match(input) {
       Ok(Outgoing::Amount(
         input.parse().snafu_context(error::AmountParse { input })?,
       ))
@@ -63,6 +73,7 @@ impl FromStr for Outgoing {
   }
 }
 
+#[cfg(feature = "sats")]
 #[cfg(test)]
 mod tests {
   use super::*;

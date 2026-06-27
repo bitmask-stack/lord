@@ -20,7 +20,6 @@ pub struct Settings {
   index_addresses: bool,
   index_cache_size: Option<usize>,
   index_sats: bool,
-  index_transactions: bool,
   integration_test: bool,
   max_savepoints: Option<usize>,
   savepoint_interval: Option<usize>,
@@ -124,7 +123,6 @@ impl Settings {
       index_addresses: self.index_addresses || source.index_addresses,
       index_cache_size: self.index_cache_size.or(source.index_cache_size),
       index_sats: self.index_sats || source.index_sats,
-      index_transactions: self.index_transactions || source.index_transactions,
       integration_test: self.integration_test || source.integration_test,
       max_savepoints: self.max_savepoints.or(source.max_savepoints),
       savepoint_interval: self.savepoint_interval.or(source.savepoint_interval),
@@ -159,7 +157,6 @@ impl Settings {
       index_addresses: options.index_addresses,
       index_cache_size: options.index_cache_size,
       index_sats: options.index_sats,
-      index_transactions: options.index_transactions,
       integration_test: options.integration_test,
       max_savepoints: options.max_savepoints,
       savepoint_interval: options.savepoint_interval,
@@ -231,7 +228,6 @@ impl Settings {
       index_addresses: get_bool("INDEX_ADDRESSES"),
       index_cache_size: get_usize("INDEX_CACHE_SIZE")?,
       index_sats: get_bool("INDEX_SATS"),
-      index_transactions: get_bool("INDEX_TRANSACTIONS"),
       integration_test: get_bool("INTEGRATION_TEST"),
       max_savepoints: get_usize("MAX_SAVEPOINTS")?,
       savepoint_interval: get_usize("SAVEPOINT_INTERVAL")?,
@@ -260,7 +256,6 @@ impl Settings {
       index_addresses: true,
       index_cache_size: None,
       index_sats: true,
-      index_transactions: false,
       integration_test: false,
       max_savepoints: None,
       savepoint_interval: None,
@@ -300,7 +295,7 @@ impl Settings {
 
     let index = match &self.index {
       Some(path) => path.clone(),
-      None => data_dir.join("index.redb"),
+      None => data_dir.join("index"),
     };
 
     Ok(Self {
@@ -333,7 +328,6 @@ impl Settings {
         }
       }),
       index_sats: self.index_sats,
-      index_transactions: self.index_transactions,
       integration_test: self.integration_test,
       max_savepoints: Some(self.max_savepoints.unwrap_or(2)),
       savepoint_interval: Some(self.savepoint_interval.unwrap_or(10)),
@@ -517,10 +511,6 @@ impl Settings {
 
   pub fn index_sats_raw(&self) -> bool {
     self.index_sats
-  }
-
-  pub fn index_transactions_raw(&self) -> bool {
-    self.index_transactions
   }
 
   pub fn integration_test(&self) -> bool {
@@ -1061,7 +1051,6 @@ mod tests {
         index_addresses: true,
         index_cache_size: Some(4),
         index_sats: true,
-        index_transactions: true,
         integration_test: true,
         server_password: Some("server password".into()),
         server_url: Some("server url".into()),
@@ -1093,7 +1082,6 @@ mod tests {
           "--index-addresses",
           "--index-cache-size=4",
           "--index-sats",
-          "--index-transactions",
           "--index=index",
           "--integration-test",
           "--server-password=server password",
@@ -1121,7 +1109,6 @@ mod tests {
         index_addresses: true,
         index_cache_size: Some(4),
         index_sats: true,
-        index_transactions: true,
         integration_test: true,
         server_password: Some("server password".into()),
         server_url: None,

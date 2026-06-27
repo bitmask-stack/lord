@@ -107,6 +107,7 @@ impl Output {
   }
 }
 
+#[cfg(feature = "sats")]
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sat {
   pub address: Option<String>,

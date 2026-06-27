@@ -169,7 +169,7 @@ fn restore_with_wrong_descriptors_fails() {
 }"#.into())
     .core(&core)
     .expected_exit_code(1)
-    .expected_stderr("error: wallet \"foo\" contains unexpected output descriptors, and does not appear to be an `ord` wallet, create a new wallet with `ord wallet create`\n")
+    .expected_stderr("error: wallet \"foo\" contains unexpected output descriptors, and does not appear to be a lord wallet, create a new wallet with `lord wallet create`\n")
     .run_and_extract_stdout();
 }
 

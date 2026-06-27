@@ -10,7 +10,6 @@ pub struct StatusHtml {
   pub lost_sats: u64,
   pub sat_index: bool,
   pub started: DateTime<Utc>,
-  pub transaction_index: bool,
   pub unrecoverably_reorged: bool,
   pub uptime: Duration,
 }

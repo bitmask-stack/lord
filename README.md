@@ -1,8 +1,49 @@
 <h1 align=center><code>lord</code></h1>
 
-> **Fork of [ord](https://github.com/ordinals/ord).** Preserves the CLI, API, and core
-> wallet/explorer functionality. Removes inscriptions and runes. See the
-> [Lord Design Document](docs/src/lord/design.md) for the full plan.
+**Lord** is a fork of [ord](https://github.com/ordinals/ord) focused on Bitcoin
+wallet and block-explorer tooling. It preserves the CLI shape, HTTP API, and
+Bitcoin Core integration operators expect from ord, while removing inscription
+and rune functionality entirely.
+
+### Storage
+
+Lord persists data with **heed3 LMDB** environments via the in-repo
+[`lord-db`](crates/lord-db) crate (heed3 + rkyv):
+
+| Store | Path | Purpose |
+|-------|------|---------|
+| **Cardinal index** | `{data_dir}/index/` (mainnet) or `{data_dir}/{chain}/index/` | Block headers, UTXOs, optional sat/address indexes |
+| **Wallet metadata** | `{data_dir}/wallets/<name>/` | Per-wallet LMDB env (schema version 2) |
+| **Carbonado blobs** | `{data_dir}/carbonado/` | Encoded content-addressed files (`{bao_root}.c{NN}`) |
+| **Filepack** | `{data_dir}/filepack/{fingerprint}/` | Directory manifests with per-file Bao roots |
+| **Commitment metadata** | `{data_dir}/storage/` | heed3 LMDB pointers only (schema version 1) |
+
+There is **no migration** from legacy `index.redb` or `wallets/<name>.redb`
+files. Delete legacy redb files and re-index or recreate wallets. See
+[implementation notes](docs/src/lord/implementation.md).
+
+### Scope today
+
+- **Wallet:** create, restore, send, balance, addresses, outputs, and related commands
+- **Explorer:** blocks, transactions, outputs, addresses, search, status
+- **Not included:** inscriptions, runes, ordinal-theory collection features
+- **Ord HTTP compatibility:** removed inscription/rune routes return **410 Gone**
+  (not silent 404); cardinal explorer routes unchanged
+- **Sat explorer (optional):** build with `--features sats` and run with
+  `--index-sats` for `/sat/:sat` and related commands
+
+**Storage commands** (Carbonado + filepack):
+
+```sh
+lord storage encode <file> --format c12 --layout inboard
+lord storage verify <bao_root_hex> --sample-rate 8
+lord filepack create <dir> --format c12
+```
+
+`--format` accepts `12` or `c12` (c0..c15).
+
+Future phases add OpenTimestamps, breccia indexing, and the storage market
+described in the [Lord Design Document](docs/src/lord/design.md).
 
 ---
 

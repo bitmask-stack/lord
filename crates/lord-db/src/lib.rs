@@ -1,10 +1,12 @@
 //! heed3 + rkyv persistence primitives for Lord.
 
 mod codec;
+mod dup;
 mod env;
 mod error;
 
 pub use codec::RkyvCodec;
+pub use dup::DupTable;
 pub use env::{LordEnv, LordEnvOptions, SCHEMA_VERSION};
 pub use error::LordDbError;
 
@@ -180,6 +182,52 @@ mod tests {
     let archived = records.get(&rtxn, key).expect("get").expect("value");
     assert_eq!(archived.id, record.id);
     assert_eq!(archived.label.as_str(), record.label);
+  }
+
+  #[test]
+  fn u64_database_survives_env_reopen() {
+    use heed3::{byteorder::BigEndian, types::U64};
+
+    let dir = TempDir::new().expect("tempdir");
+    let db_path = dir.path().join("lord-db");
+    let map_size = 64 * 1024 * 1024;
+
+    std::fs::create_dir_all(&db_path).expect("mkdir");
+
+    {
+      let env = unsafe {
+        heed3::EnvOpenOptions::new()
+          .map_size(map_size)
+          .max_dbs(8)
+          .open(&db_path)
+          .expect("open")
+      };
+
+      let mut wtxn = env.write_txn().expect("write txn");
+      let stats: heed3::Database<U64<BigEndian>, U64<BigEndian>> = env
+        .database_options()
+        .types::<U64<BigEndian>, U64<BigEndian>>()
+        .name("stats")
+        .create(&mut wtxn)
+        .expect("create");
+      stats.put(&mut wtxn, &0u64, &35u64).expect("put");
+      wtxn.commit().expect("commit");
+    }
+
+    let env = unsafe {
+      heed3::EnvOpenOptions::new()
+        .map_size(map_size)
+        .max_dbs(8)
+        .open(&db_path)
+        .expect("reopen")
+    };
+
+    let rtxn = env.read_txn().expect("read txn");
+    let stats = env
+      .open_database::<U64<BigEndian>, U64<BigEndian>>(&rtxn, Some("stats"))
+      .expect("open stats")
+      .expect("stats exists");
+    assert_eq!(stats.get(&rtxn, &0u64).expect("get").unwrap(), 35);
   }
 
   #[test]

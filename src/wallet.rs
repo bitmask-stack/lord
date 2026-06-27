@@ -6,36 +6,26 @@ use {
   },
   bitcoincore_rpc::json::ImportDescriptors,
   fee_rate::FeeRate,
-  indicatif::{ProgressBar, ProgressStyle},
-  log::log_enabled,
   miniscript::descriptor::{DescriptorSecretKey, DescriptorXKey, KeyMap, Wildcard},
-  redb::{Database, DatabaseError, ReadableDatabase, RepairSession, StorageError, TableDefinition},
-  std::sync::Once,
-  transaction_builder::TransactionBuilder,
 };
 
+pub(crate) mod inscription_id;
+pub(crate) mod store;
+pub(crate) use store::WalletStore;
+#[cfg(feature = "sats")]
 pub mod transaction_builder;
 pub mod wallet_constructor;
 
-const SCHEMA_VERSION: u64 = 1;
-
-define_table! { STATISTICS, u64, u64 }
-
-#[derive(Copy, Clone)]
-pub(crate) enum Statistic {
-  Schema = 0,
-}
-
-impl Statistic {
-  fn key(self) -> u64 {
-    self.into()
-  }
-}
-
-impl From<Statistic> for u64 {
-  fn from(statistic: Statistic) -> Self {
-    statistic as u64
-  }
+/// Test helper for integration tests that corrupt wallet schema version.
+#[doc(hidden)]
+pub fn set_schema_version_for_test(data_dir: &Path, wallet_name: &str, version: u64) -> Result<()> {
+  let settings = Settings::load(crate::Options {
+    data_dir: Some(data_dir.into()),
+    regtest: true,
+    integration_test: true,
+    ..crate::Options::default()
+  })?;
+  store::set_schema_version_for_test(&settings, wallet_name, version)
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
@@ -56,7 +46,9 @@ pub struct ListDescriptorsResult {
 
 pub(crate) struct Wallet {
   bitcoin_client: Client,
-  database: Database,
+  /// heed3 LMDB environment for per-wallet metadata; opened on every wallet
+  /// command to enforce legacy `.redb` rejection and schema version checks.
+  store: WalletStore,
   has_sat_index: bool,
   rpc_url: Url,
   utxos: BTreeMap<OutPoint, TxOut>,
@@ -67,6 +59,7 @@ pub(crate) struct Wallet {
 }
 
 impl Wallet {
+  #[cfg(feature = "sats")]
   pub(crate) fn get_wallet_sat_ranges(&self) -> Result<Vec<(OutPoint, Vec<(u64, u64)>)>> {
     ensure!(
       self.has_sat_index,
@@ -85,6 +78,7 @@ impl Wallet {
     Ok(output_sat_ranges)
   }
 
+  #[cfg(feature = "sats")]
   pub(crate) fn get_output_sat_ranges(&self, output: &OutPoint) -> Result<Vec<(u64, u64)>> {
     ensure!(
       self.has_sat_index,
@@ -102,6 +96,7 @@ impl Wallet {
     }
   }
 
+  #[cfg(feature = "sats")]
   pub(crate) fn find_sat_in_outputs(&self, sat: Sat) -> Result<SatPoint> {
     ensure!(
       self.has_sat_index,
@@ -185,7 +180,7 @@ impl Wallet {
 
     if tr != 2 || descriptors.len() != 2 + rawtr {
       bail!(
-        "wallet \"{}\" contains unexpected output descriptors, and does not appear to be an `ord` wallet, create a new wallet with `ord wallet create`",
+        "wallet \"{}\" contains unexpected output descriptors, and does not appear to be a lord wallet, create a new wallet with `lord wallet create`",
         wallet_name
       );
     }
@@ -198,6 +193,8 @@ impl Wallet {
     settings: &Settings,
     descriptors: Vec<Descriptor>,
   ) -> Result {
+    let _store = WalletStore::open(&name, settings)?;
+
     let client = Self::check_version(settings.bitcoin_rpc_client(Some(name.clone()))?)?;
 
     let descriptors = Self::check_descriptors(&name, descriptors)?;
@@ -235,6 +232,8 @@ impl Wallet {
     seed: [u8; 64],
     timestamp: bitcoincore_rpc::json::Timestamp,
   ) -> Result {
+    let _store = WalletStore::open(&name, settings)?;
+
     Self::check_version(settings.bitcoin_rpc_client(None)?)?.create_wallet(
       &name,
       None,
@@ -332,97 +331,6 @@ impl Wallet {
       version % 10000 / 100,
       version % 100
     )
-  }
-
-  pub(crate) fn open_database(wallet_name: &String, settings: &Settings) -> Result<Database> {
-    let path = settings
-      .data_dir()
-      .join("wallets")
-      .join(format!("{wallet_name}.redb"));
-
-    if let Err(err) = fs::create_dir_all(path.parent().unwrap()) {
-      bail!(
-        "failed to create data dir `{}`: {err}",
-        path.parent().unwrap().display()
-      );
-    }
-
-    let db_path = path.clone().to_owned();
-    let once = Once::new();
-    let progress_bar = Mutex::new(None);
-    let integration_test = settings.integration_test();
-
-    let repair_callback = move |progress: &mut RepairSession| {
-      once.call_once(|| {
-        println!(
-          "Wallet database file `{}` needs recovery. This can take some time.",
-          db_path.display()
-        )
-      });
-
-      if !(cfg!(test) || log_enabled!(log::Level::Info) || integration_test) {
-        let mut guard = progress_bar.lock().unwrap();
-
-        let progress_bar = guard.get_or_insert_with(|| {
-          let progress_bar = ProgressBar::new(100);
-          progress_bar.set_style(
-            ProgressStyle::with_template("[repairing database] {wide_bar} {pos}/{len}").unwrap(),
-          );
-          progress_bar
-        });
-
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        progress_bar.set_position((progress.progress() * 100.0) as u64);
-      }
-    };
-
-    let database = match Database::builder()
-      .set_repair_callback(repair_callback)
-      .open(&path)
-    {
-      Ok(database) => {
-        {
-          let schema_version = database
-            .begin_read()?
-            .open_table(STATISTICS)?
-            .get(&Statistic::Schema.key())?
-            .map(|x| x.value())
-            .unwrap_or(0);
-
-          match schema_version.cmp(&SCHEMA_VERSION) {
-            cmp::Ordering::Less => bail!(
-              "wallet database at `{}` appears to have been built with an older, incompatible version of ord, consider deleting and rebuilding the index: index schema {schema_version}, ord schema {SCHEMA_VERSION}",
-              path.display()
-            ),
-            cmp::Ordering::Greater => bail!(
-              "wallet database at `{}` appears to have been built with a newer, incompatible version of ord, consider updating ord: index schema {schema_version}, ord schema {SCHEMA_VERSION}",
-              path.display()
-            ),
-            cmp::Ordering::Equal => {}
-          }
-        }
-
-        database
-      }
-      Err(DatabaseError::Storage(StorageError::Io(error)))
-        if error.kind() == io::ErrorKind::NotFound =>
-      {
-        let database = Database::builder().create(&path)?;
-
-        let mut tx = database.begin_write()?;
-        tx.set_quick_repair(true);
-
-        tx.open_table(STATISTICS)?
-          .insert(&Statistic::Schema.key(), &SCHEMA_VERSION)?;
-
-        tx.commit()?;
-
-        database
-      }
-      Err(error) => bail!("failed to open wallet database: {error}"),
-    };
-
-    Ok(database)
   }
 
   pub(super) fn sign_and_broadcast_transaction(
@@ -525,6 +433,7 @@ impl Wallet {
     Ok(unsigned_transaction)
   }
 
+  #[cfg(feature = "sats")]
   pub fn create_unsigned_send_satpoint_transaction(
     &self,
     destination: Address,

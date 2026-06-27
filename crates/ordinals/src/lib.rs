@@ -1,5 +1,6 @@
 //! Types for interoperating with ordinals and satoshis.
 #![allow(clippy::large_enum_variant)]
+#![cfg_attr(not(feature = "sats"), allow(unused_imports))]
 
 use {
   bitcoin::{
@@ -21,20 +22,31 @@ use {
   thiserror::Error,
 };
 
-pub use {
-  charm::Charm, decimal_sat::DecimalSat, degree::Degree, epoch::Epoch, height::Height,
-  rarity::Rarity, sat::Sat, sat_point::SatPoint,
-};
-
 pub const COIN_VALUE: u64 = 100_000_000;
 pub const CYCLE_EPOCHS: u32 = 6;
 
-mod charm;
-mod decimal_sat;
-mod degree;
-mod epoch;
-mod height;
-mod rarity;
-pub mod sat;
-pub mod sat_point;
+pub mod height;
 pub mod varint;
+
+#[cfg(feature = "sats")]
+mod charm;
+#[cfg(feature = "sats")]
+mod decimal_sat;
+#[cfg(feature = "sats")]
+mod degree;
+#[cfg(feature = "sats")]
+mod epoch;
+#[cfg(feature = "sats")]
+mod rarity;
+#[cfg(feature = "sats")]
+pub mod sat;
+#[cfg(feature = "sats")]
+pub mod sat_point;
+
+#[cfg(feature = "sats")]
+pub use {
+  charm::Charm, decimal_sat::DecimalSat, degree::Degree, epoch::Epoch, rarity::Rarity, sat::Sat,
+  sat_point::SatPoint,
+};
+
+pub use height::Height;

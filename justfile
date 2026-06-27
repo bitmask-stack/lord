@@ -59,7 +59,7 @@ delete-indices: \
   (delete-index "signet.ordinals.net") \
 
 delete-index domain:
-  ssh root@{{domain}} 'systemctl stop lord && rm -f /var/lib/lord/*/index.redb'
+  ssh root@{{domain}} 'systemctl stop lord && rm -rf /var/lib/lord/*/index'
 
 servers := 'alpha bravo charlie signet'
 

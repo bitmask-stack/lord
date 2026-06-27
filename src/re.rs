@@ -23,7 +23,7 @@ pub(crate) static SATPOINT: LazyLock<Regex> = re!(r"[[:xdigit:]]{64}:\d+:\d+");
 pub(crate) static SAT_NAME: LazyLock<Regex> = re!(r"[a-z]{1,11}");
 pub(crate) static SPACED_RUNE: LazyLock<Regex> = re!(r"[A-Z•.]+");
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sats"))]
 mod tests {
   use super::*;
 

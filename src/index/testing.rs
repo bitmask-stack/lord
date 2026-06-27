@@ -1,4 +1,4 @@
-use {super::*, bitcoin::script::PushBytes, std::ffi::OsString, tempfile::TempDir};
+use {super::*, std::ffi::OsString, tempfile::TempDir};
 
 pub(crate) struct ContextBuilder {
   args: Vec<OsString>,
@@ -107,6 +107,10 @@ impl Context {
     let blocks = self.core.mine_blocks_with_subsidy(n, subsidy);
     self.index.update().unwrap();
     blocks
+  }
+
+  pub(crate) fn enable_savepoints(&mut self) {
+    self.index.set_savepoints_enabled(true);
   }
 
   pub(crate) fn configurations() -> Vec<Context> {

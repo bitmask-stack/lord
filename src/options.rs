@@ -58,8 +58,6 @@ pub struct Options {
   pub(crate) index_cache_size: Option<usize>,
   #[arg(long, help = "Track location of all satoshis.")]
   pub(crate) index_sats: bool,
-  #[arg(long, help = "Store transactions in index.")]
-  pub(crate) index_transactions: bool,
   #[arg(long, help = "Run in integration test mode.")]
   pub(crate) integration_test: bool,
   #[clap(long, short, long, help = "Specify output format. [default: json]")]

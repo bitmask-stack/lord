@@ -64,6 +64,7 @@ fn address_page_shows_outputs_and_sat_balance() {
   );
 }
 
+#[cfg(feature = "sats")]
 #[test]
 fn expected_sat_time_is_rounded() {
   let core = mockcore::spawn();
@@ -74,6 +75,7 @@ fn expected_sat_time_is_rounded() {
   );
 }
 
+#[cfg(feature = "sats")]
 #[test]
 fn sat_page_shows_luck() {
   let core = mockcore::spawn();
@@ -136,6 +138,7 @@ fn all_endpoints_in_recursive_directory_return_json() {
   assert!(ord_server.request("/blockhash/2").json::<String>().is_err());
 }
 
+#[cfg(feature = "sats")]
 #[test]
 fn sat_recursive_endpoints_without_sat_index_return_404() {
   let core = mockcore::spawn();
@@ -151,7 +154,52 @@ fn sat_recursive_endpoints_without_sat_index_return_404() {
 
   assert_eq!(
     server.request("/r/sat/5000000000/at/1").status(),
-    StatusCode::NOT_FOUND,
+    StatusCode::GONE,
+  );
+}
+
+#[cfg(not(feature = "sats"))]
+#[test]
+fn sat_routes_without_sats_feature_return_410() {
+  let core = mockcore::spawn();
+
+  core.mine_blocks(1);
+
+  let server = TestServer::spawn_with_args(&core, &[""]);
+
+  let expected_message = "sat explorer requires lord to be built with the `sats` feature";
+
+  let paths = [
+    "/sat/0",
+    "/ordinal/0",
+    "/rare.txt",
+    "/satpoint/000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f:0:0",
+    "/r/sat/5000000000",
+    "/r/sat/5000000000/0",
+  ];
+
+  for path in paths {
+    let response = server.request(path);
+    assert_eq!(
+      response.status(),
+      StatusCode::GONE,
+      "expected 410 for {path}"
+    );
+    assert_eq!(
+      response
+        .headers()
+        .get(reqwest::header::CACHE_CONTROL)
+        .unwrap(),
+      "no-store"
+    );
+    assert_eq!(response.text().unwrap(), expected_message);
+  }
+
+  let response = server.request("/r/sat/5000000000/at/1");
+  assert_eq!(response.status(), StatusCode::GONE);
+  assert_eq!(
+    response.text().unwrap(),
+    "recursive sat at index is not available in lord"
   );
 }
 

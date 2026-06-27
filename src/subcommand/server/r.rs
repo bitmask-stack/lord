@@ -147,6 +147,7 @@ pub(super) async fn blocktime_string(
   })
 }
 
+#[cfg(feature = "sats")]
 pub(super) async fn sat(
   Extension(index): Extension<Arc<Index>>,
   Path(sat): Path<u64>,
@@ -205,6 +206,7 @@ pub(super) async fn sat(
   })
 }
 
+#[cfg(feature = "sats")]
 pub(super) async fn sat_paginated(
   index: Extension<Arc<Index>>,
   Path((sat_number, _page)): Path<(u64, u64)>,

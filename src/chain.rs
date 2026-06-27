@@ -54,7 +54,14 @@ impl Chain {
   }
 
   pub(crate) fn first_rune_height(self) -> u32 {
-    crate::index::Rune::first_rune_height(self.into())
+    DIFFCHANGE_INTERVAL
+      * match self {
+        Self::Mainnet => 4,
+        Self::Regtest => 0,
+        Self::Signet => 0,
+        Self::Testnet => 12,
+        Self::Testnet4 => 0,
+      }
   }
 
   pub(crate) fn jubilee_height(self) -> u32 {

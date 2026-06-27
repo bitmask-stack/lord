@@ -1,6 +1,12 @@
 use {
-  super::{fetcher::Fetcher, *},
+  super::{
+    fetcher::Fetcher,
+    store::{IndexDatabases, IndexStore},
+    *,
+  },
   futures::future::try_join_all,
+  heed3::RwTxn,
+  ref_cast::RefCast,
   tokio::sync::{
     broadcast::{self},
     mpsc::{self},
@@ -28,34 +34,67 @@ impl From<Block> for BlockData {
   }
 }
 
-pub(crate) struct Updater<'index> {
+pub(crate) struct Updater {
   pub(super) height: u32,
-  pub(super) index: &'index Index,
   pub(super) outputs_cached: u64,
   pub(super) outputs_traversed: u64,
   pub(super) sat_ranges_since_flush: u64,
 }
 
-impl Updater<'_> {
-  pub(crate) fn update_index(&mut self, mut wtx: WriteTransaction) -> Result {
+impl Updater {
+  pub(crate) fn update_index<'a>(
+    &mut self,
+    index: &'a Index,
+    store: &'a IndexStore,
+    mut wtx: RwTxn<'a>,
+  ) -> Result {
     let start = Instant::now();
-    let starting_height = u32::try_from(self.index.client.get_block_count()?).unwrap() + 1;
+    let bitcoind_height = u32::try_from(index.client.get_block_count()?)?;
+    let starting_height = bitcoind_height + 1;
     let starting_index_height = self.height;
+    let mut dbs = store.databases_mut(&wtx)?;
 
-    wtx
-      .open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?
-      .insert(
-        &self.height,
-        &SystemTime::now()
-          .duration_since(SystemTime::UNIX_EPOCH)
-          .map(|duration| duration.as_millis())
-          .unwrap_or(0),
-      )?;
+    if self.height == starting_height {
+      let index_tip = Index::block_hash_in_txn(store, &wtx, Some(bitcoind_height))?;
+      let bitcoind_tip = index
+        .client
+        .get_block_hash(u64::from(bitcoind_height))
+        .into_option()?;
+      if let Some(bitcoind_tip) = bitcoind_tip
+        && index_tip != Some(bitcoind_tip)
+      {
+        Reorg::detect_reorg(
+          &BlockData {
+            header: Header {
+              prev_blockhash: bitcoind_tip,
+              merkle_root: TxMerkleNode::all_zeros(),
+              time: 0,
+              bits: bitcoin::pow::CompactTarget::from_consensus(0),
+              nonce: 0,
+              version: bitcoin::block::Version::ONE,
+            },
+            txdata: Vec::new(),
+          },
+          self.height,
+          index,
+          store,
+          &wtx,
+        )?;
+      }
+    }
+    dbs.write_transaction_timestamps.put(
+      &mut wtx,
+      &self.height,
+      &(SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)),
+    )?;
 
     let mut progress_bar = if cfg!(test)
       || log_enabled!(log::Level::Info)
       || starting_height <= self.height
-      || self.index.settings.integration_test()
+      || index.settings.integration_test()
     {
       None
     } else {
@@ -67,16 +106,19 @@ impl Updater<'_> {
       Some(progress_bar)
     };
 
-    let rx = Self::fetch_blocks_from(self.index, self.height)?;
+    let rx = Self::fetch_blocks_from(index, self.height)?;
 
-    let (mut output_sender, mut txout_receiver) = Self::spawn_fetcher(self.index)?;
+    let (mut output_sender, mut txout_receiver) = Self::spawn_fetcher(index)?;
 
     let mut uncommitted = 0;
     let mut utxo_cache = HashMap::new();
     while let Ok(block) = rx.recv() {
       self.index_block(
+        index,
         &mut output_sender,
         &mut txout_receiver,
+        store,
+        &dbs,
         &mut wtx,
         block,
         &mut utxo_cache,
@@ -86,7 +128,7 @@ impl Updater<'_> {
         progress_bar.inc(1);
 
         if progress_bar.position() > progress_bar.length().unwrap() {
-          if let Ok(count) = self.index.client.get_block_count() {
+          if let Ok(count) = index.client.get_block_count() {
             progress_bar.set_length(count + 1);
           } else {
             log::warn!("Failed to fetch latest block height");
@@ -96,34 +138,45 @@ impl Updater<'_> {
 
       uncommitted += 1;
 
-      if uncommitted == self.index.settings.commit_interval()
-        || (!self.index.settings.integration_test()
-          && Reorg::is_savepoint_required(self.index, self.height)?)
+      if uncommitted == index.settings.commit_interval()
+        || (!index.settings.integration_test()
+          && Reorg::is_savepoint_required(
+            index,
+            dbs
+              .statistic_to_count
+              .get(&wtx, &Statistic::LastSavepointHeight.key())?
+              .unwrap_or_default(),
+            self.height,
+          )?)
       {
-        self.commit(wtx, utxo_cache)?;
+        wtx = Self::commit(
+          index,
+          store,
+          &dbs,
+          wtx,
+          self.height,
+          &mut self.outputs_traversed,
+          &mut self.sat_ranges_since_flush,
+          utxo_cache,
+        )?;
+        dbs = store.databases_mut(&wtx)?;
         utxo_cache = HashMap::new();
         uncommitted = 0;
-        wtx = self.index.begin_write()?;
-        let height = wtx
-          .open_table(HEIGHT_TO_BLOCK_HEADER)?
-          .range(0..)?
-          .next_back()
-          .transpose()?
-          .map(|(height, _hash)| height.value() + 1)
+        let height = dbs
+          .height_to_block_header
+          .last(&wtx)?
+          .map(|(height, _header)| height + 1)
           .unwrap_or(0);
         if height != self.height {
-          // another update has run between committing and beginning the new
-          // write transaction
           break;
         }
-        wtx
-          .open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?
-          .insert(
-            &self.height,
-            &SystemTime::now()
-              .duration_since(SystemTime::UNIX_EPOCH)?
-              .as_millis(),
-          )?;
+        dbs.write_transaction_timestamps.put(
+          &mut wtx,
+          &self.height,
+          &(SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_millis()),
+        )?;
       }
 
       if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
@@ -132,15 +185,35 @@ impl Updater<'_> {
     }
 
     if starting_index_height == 0 && self.height > 0 {
-      wtx.open_table(STATISTIC_TO_COUNT)?.insert(
+      store.set_statistic(
+        &mut wtx,
         Statistic::InitialSyncTime.key(),
-        &u64::try_from(start.elapsed().as_micros())?,
+        u64::try_from(start.elapsed().as_micros())?,
       )?;
     }
 
     if uncommitted > 0 {
-      self.commit(wtx, utxo_cache)?;
+      wtx = Self::commit(
+        index,
+        store,
+        &dbs,
+        wtx,
+        self.height,
+        &mut self.outputs_traversed,
+        &mut self.sat_ranges_since_flush,
+        utxo_cache,
+      )?;
     }
+
+    dbs = store.databases_mut(&wtx)?;
+    dbs.write_transaction_timestamps.put(
+      &mut wtx,
+      &self.height,
+      &(SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_millis()),
+    )?;
+    wtx.commit()?;
 
     if let Some(progress_bar) = &mut progress_bar {
       progress_bar.finish_and_clear();
@@ -237,19 +310,13 @@ impl Updater<'_> {
   fn spawn_fetcher(index: &Index) -> Result<(mpsc::Sender<OutPoint>, broadcast::Receiver<TxOut>)> {
     let fetcher = Fetcher::new(&index.settings)?;
 
-    // A block probably has no more than 20k inputs
     const CHANNEL_BUFFER_SIZE: usize = 20_000;
-
-    // Batch 2048 missing inputs at a time, arbitrarily chosen size
     const BATCH_SIZE: usize = 2048;
 
     let (outpoint_sender, mut outpoint_receiver) = mpsc::channel::<OutPoint>(CHANNEL_BUFFER_SIZE);
 
     let (txout_sender, txout_receiver) = broadcast::channel::<TxOut>(CHANNEL_BUFFER_SIZE);
 
-    // Default rpcworkqueue in bitcoind is 16, meaning more than 16 concurrent requests will be rejected.
-    // Since we are already requesting blocks on a separate thread, and we don't want to break if anything
-    // else runs a request, we keep this to 12.
     let parallel_requests: usize = index.settings.bitcoin_rpc_limit().try_into().unwrap();
 
     let runtime = index.settings.runtime()?;
@@ -262,8 +329,6 @@ impl Updater<'_> {
             return;
           };
 
-          // There's no try_iter on tokio::sync::mpsc::Receiver like std::sync::mpsc::Receiver.
-          // So we just loop until BATCH_SIZE doing try_recv until it returns None.
           let mut outpoints = vec![outpoint];
           for _ in 0..BATCH_SIZE - 1 {
             let Ok(outpoint) = outpoint_receiver.try_recv() else {
@@ -272,7 +337,6 @@ impl Updater<'_> {
             outpoints.push(outpoint);
           }
 
-          // Break outputs into chunks for parallel requests
           let chunk_size = (outpoints.len() / parallel_requests) + 1;
           let mut futs = Vec::with_capacity(parallel_requests);
           for chunk in outpoints.chunks(chunk_size) {
@@ -289,7 +353,6 @@ impl Updater<'_> {
             }
           };
 
-          // Send all tx outputs back in order
           for (i, tx) in txs.iter().flatten().enumerate() {
             let Ok(_) =
               txout_sender.send(tx.output[usize::try_from(outpoints[i].vout).unwrap()].clone())
@@ -307,13 +370,16 @@ impl Updater<'_> {
 
   fn index_block(
     &mut self,
+    index: &Index,
     output_sender: &mut mpsc::Sender<OutPoint>,
     txout_receiver: &mut broadcast::Receiver<TxOut>,
-    wtx: &mut WriteTransaction,
+    store: &IndexStore,
+    dbs: &IndexDatabases,
+    wtx: &mut RwTxn<'_>,
     block: BlockData,
     utxo_cache: &mut HashMap<OutPoint, UtxoEntryBuf>,
   ) -> Result<()> {
-    Reorg::detect_reorg(&block, self.height, self.index)?;
+    Reorg::detect_reorg(&block, self.height, index, store, wtx)?;
 
     let start = Instant::now();
     let mut sat_ranges_written = 0;
@@ -326,23 +392,26 @@ impl Updater<'_> {
       block.txdata.len()
     );
 
-    let mut height_to_block_header = wtx.open_table(HEIGHT_TO_BLOCK_HEADER)?;
-    let mut statistic_to_count = wtx.open_table(STATISTIC_TO_COUNT)?;
-
-    if self.index.index_addresses || self.index.index_sats {
+    if index.index_addresses || index.index_sats {
       self.index_utxo_entries(
+        index,
         &block,
         txout_receiver,
         output_sender,
         utxo_cache,
         wtx,
-        &mut statistic_to_count,
+        store,
+        dbs,
         &mut sat_ranges_written,
         &mut outputs_in_block,
       )?;
     }
 
-    height_to_block_header.insert(&self.height, &block.header.store())?;
+    dbs.height_to_block_header.put(
+      wtx,
+      &self.height,
+      &records::HeaderRecord(block.header.store()),
+    )?;
 
     self.height += 1;
     self.outputs_traversed += outputs_in_block;
@@ -355,23 +424,21 @@ impl Updater<'_> {
     Ok(())
   }
 
-  fn index_utxo_entries<'wtx>(
+  #[cfg_attr(not(feature = "sats"), allow(unused_variables))]
+  fn index_utxo_entries(
     &mut self,
+    index: &Index,
     block: &BlockData,
     txout_receiver: &mut broadcast::Receiver<TxOut>,
     output_sender: &mut mpsc::Sender<OutPoint>,
     utxo_cache: &mut HashMap<OutPoint, UtxoEntryBuf>,
-    wtx: &'wtx WriteTransaction,
-    statistic_to_count: &mut Table<'wtx, u64, u64>,
+    wtx: &mut RwTxn<'_>,
+    store: &IndexStore,
+    dbs: &IndexDatabases,
     sat_ranges_written: &mut u64,
     outputs_in_block: &mut u64,
   ) -> Result {
-    let mut outpoint_to_utxo_entry = wtx.open_table(OUTPOINT_TO_UTXO_ENTRY)?;
-    let mut sat_to_satpoint = wtx.open_table(SAT_TO_SATPOINT)?;
-    let mut script_pubkey_to_outpoint = wtx.open_multimap_table(SCRIPT_PUBKEY_TO_OUTPOINT)?;
-
-    if !self.index.have_full_utxo_index() {
-      // Send all missing input outpoints to be fetched
+    if !index.have_full_utxo_index() {
       let txids = block
         .txdata
         .iter()
@@ -381,38 +448,41 @@ impl Updater<'_> {
       for (tx, _) in &block.txdata {
         for input in &tx.input {
           let prev_output = input.previous_output;
-          // We don't need coinbase inputs
           if prev_output.is_null() {
             continue;
           }
-          // We don't need inputs from txs earlier in the block, since
-          // they'll be added to cache when the tx is indexed
           if txids.contains(&prev_output.txid) {
             continue;
           }
-          // We don't need inputs we already have in our cache from earlier blocks
           if utxo_cache.contains_key(&prev_output) {
             continue;
           }
-          // We don't need inputs we already have in our database
-          if outpoint_to_utxo_entry.get(&prev_output.store())?.is_some() {
+          let key = prev_output.store();
+          if dbs
+            .outpoint_to_utxo_entry
+            .get(wtx, store::IndexStore::outpoint_key(&key))?
+            .is_some()
+          {
             continue;
           }
-          // Send this outpoint to background thread to be fetched
           output_sender.blocking_send(prev_output)?;
         }
       }
     }
 
-    let mut lost_sats = statistic_to_count
-      .get(&Statistic::LostSats.key())?
-      .map(|lost_sats| lost_sats.value())
-      .unwrap_or(0);
+    #[cfg(feature = "sats")]
+    let mut lost_sats = dbs
+      .statistic_to_count
+      .get(wtx, &Statistic::LostSats.key())?
+      .unwrap_or_default();
 
-    let mut coinbase_inputs = Vec::new();
+    #[cfg(feature = "sats")]
+    let mut coinbase_inputs = Vec::<u8>::new();
+    #[cfg(feature = "sats")]
     let mut lost_sat_ranges = Vec::new();
 
-    if self.index.index_sats {
+    #[cfg(feature = "sats")]
+    if index.index_sats {
       let h = Height(self.height);
       if h.subsidy() > 0 {
         let start = h.starting_sat();
@@ -430,6 +500,7 @@ impl Updater<'_> {
     {
       log::trace!("Indexing transaction {tx_offset}…");
 
+      #[cfg_attr(not(feature = "sats"), allow(unused_variables))]
       let input_utxo_entries = if tx_offset == 0 {
         Vec::new()
       } else {
@@ -441,17 +512,29 @@ impl Updater<'_> {
             let entry = if let Some(entry) = utxo_cache.remove(&OutPoint::load(outpoint)) {
               self.outputs_cached += 1;
               entry
-            } else if let Some(entry) = outpoint_to_utxo_entry.remove(&outpoint)? {
-              if self.index.index_addresses {
-                let script_pubkey = entry.value().parse(self.index).script_pubkey();
-                if !script_pubkey_to_outpoint.remove(script_pubkey, outpoint)? {
+            } else if let Some(entry) = dbs
+              .outpoint_to_utxo_entry
+              .get(wtx, IndexStore::outpoint_key(&outpoint))?
+            {
+              let entry_bytes = entry.0.to_vec();
+              if index.index_addresses {
+                let script_pubkey = UtxoEntry::ref_cast(entry_bytes.as_slice())
+                  .parse(index)
+                  .script_pubkey();
+                if !dbs
+                  .script_pubkey_to_outpoint
+                  .delete(wtx, script_pubkey, &outpoint)?
+                {
                   panic!("script pubkey entry ({script_pubkey:?}, {outpoint:?}) not found");
                 }
               }
 
-              entry.value().to_buf()
+              dbs
+                .outpoint_to_utxo_entry
+                .delete(wtx, IndexStore::outpoint_key(&outpoint))?;
+              UtxoEntry::ref_cast(entry_bytes.as_slice()).to_buf()
             } else {
-              assert!(!self.index.have_full_utxo_index());
+              assert!(!index.have_full_utxo_index());
               let txout = txout_receiver.blocking_recv().map_err(|err| {
                 anyhow!(
                   "failed to get transaction for {}: {err}",
@@ -460,9 +543,9 @@ impl Updater<'_> {
               })?;
 
               let mut entry = UtxoEntryBuf::new();
-              entry.push_value(txout.value.to_sat(), self.index);
-              if self.index.index_addresses {
-                entry.push_script_pubkey(txout.script_pubkey.as_bytes(), self.index);
+              entry.push_value(txout.value.to_sat(), index);
+              if index.index_addresses {
+                entry.push_script_pubkey(txout.script_pubkey.as_bytes(), index);
               }
 
               entry
@@ -473,10 +556,11 @@ impl Updater<'_> {
           .collect::<Result<Vec<UtxoEntryBuf>>>()?
       };
 
+      #[cfg(feature = "sats")]
       let input_utxo_entries = input_utxo_entries
         .iter()
-        .map(|entry| entry.parse(self.index))
-        .collect::<Vec<ParsedUtxoEntry>>();
+        .map(|entry| entry.parse(index))
+        .collect::<Vec<utxo_entry::ParsedUtxoEntry>>();
 
       let mut output_utxo_entries = tx
         .output
@@ -484,8 +568,9 @@ impl Updater<'_> {
         .map(|_| UtxoEntryBuf::new())
         .collect::<Vec<UtxoEntryBuf>>();
 
-      let input_sat_ranges;
-      if self.index.index_sats {
+      #[cfg(feature = "sats")]
+      if index.index_sats {
+        let input_sat_ranges;
         let leftover_sat_ranges;
 
         if tx_offset == 0 {
@@ -502,9 +587,11 @@ impl Updater<'_> {
         }
 
         self.index_transaction_sats(
+          index,
           tx,
           *txid,
-          &mut sat_to_satpoint,
+          wtx,
+          dbs,
           &mut output_utxo_entries,
           input_sat_ranges.as_ref().unwrap(),
           leftover_sat_ranges,
@@ -513,12 +600,17 @@ impl Updater<'_> {
         )?;
       } else {
         for (vout, txout) in tx.output.iter().enumerate() {
-          output_utxo_entries[vout].push_value(txout.value.to_sat(), self.index);
+          output_utxo_entries[vout].push_value(txout.value.to_sat(), index);
         }
       }
 
-      if self.index.index_addresses {
-        self.index_transaction_output_script_pubkeys(tx, &mut output_utxo_entries);
+      #[cfg(not(feature = "sats"))]
+      for (vout, txout) in tx.output.iter().enumerate() {
+        output_utxo_entries[vout].push_value(txout.value.to_sat(), index);
+      }
+
+      if index.index_addresses {
+        self.index_transaction_output_script_pubkeys(index, tx, &mut output_utxo_entries);
       }
 
       for (vout, output_utxo_entry) in output_utxo_entries.into_iter().enumerate() {
@@ -527,24 +619,25 @@ impl Updater<'_> {
       }
     }
 
+    #[cfg(feature = "sats")]
     if !lost_sat_ranges.is_empty() {
-      // Note that the lost-sats outpoint is special, because (unlike real
-      // outputs) it gets written to more than once.  commit() will merge
-      // our new entry with any existing one.
       let utxo_entry = utxo_cache
         .entry(OutPoint::null())
-        .or_insert(UtxoEntryBuf::empty(self.index));
+        .or_insert(UtxoEntryBuf::empty(index));
 
       for chunk in lost_sat_ranges.chunks_exact(11) {
         let (start, end) = SatRange::load(chunk.try_into().unwrap());
         if !Sat(start).common() {
-          sat_to_satpoint.insert(
+          dbs.sat_to_satpoint.put(
+            wtx,
             &start,
-            &SatPoint {
-              outpoint: OutPoint::null(),
-              offset: lost_sats,
-            }
-            .store(),
+            &records::SatPointRecord(
+              SatPoint {
+                outpoint: OutPoint::null(),
+                offset: lost_sats,
+              }
+              .store(),
+            ),
           )?;
         }
 
@@ -552,16 +645,17 @@ impl Updater<'_> {
       }
 
       let mut new_utxo_entry = UtxoEntryBuf::new();
-      new_utxo_entry.push_sat_ranges(&lost_sat_ranges, self.index);
-      if self.index.index_addresses {
-        new_utxo_entry.push_script_pubkey(&[], self.index);
+      new_utxo_entry.push_sat_ranges(&lost_sat_ranges, index);
+      if index.index_addresses {
+        new_utxo_entry.push_script_pubkey(&[], index);
       }
 
-      *utxo_entry = UtxoEntryBuf::merged(utxo_entry, &new_utxo_entry, self.index);
+      *utxo_entry = UtxoEntryBuf::merged(utxo_entry, &new_utxo_entry, index);
     }
 
-    if self.index.index_sats {
-      statistic_to_count.insert(&Statistic::LostSats.key(), &lost_sats)?;
+    #[cfg(feature = "sats")]
+    if index.index_sats {
+      store.set_statistic(wtx, Statistic::LostSats.key(), lost_sats)?;
     }
 
     Ok(())
@@ -569,19 +663,23 @@ impl Updater<'_> {
 
   fn index_transaction_output_script_pubkeys(
     &mut self,
+    index: &Index,
     tx: &Transaction,
     output_utxo_entries: &mut [UtxoEntryBuf],
   ) {
     for (vout, txout) in tx.output.iter().enumerate() {
-      output_utxo_entries[vout].push_script_pubkey(txout.script_pubkey.as_bytes(), self.index);
+      output_utxo_entries[vout].push_script_pubkey(txout.script_pubkey.as_bytes(), index);
     }
   }
 
+  #[cfg(feature = "sats")]
   fn index_transaction_sats(
     &mut self,
+    index: &Index,
     tx: &Transaction,
     txid: Txid,
-    sat_to_satpoint: &mut Table<u64, &SatPointValue>,
+    wtx: &mut RwTxn<'_>,
+    dbs: &IndexDatabases,
     output_utxo_entries: &mut [UtxoEntryBuf],
     input_sat_ranges: &[&[u8]],
     leftover_sat_ranges: &mut Vec<u8>,
@@ -593,9 +691,6 @@ impl Updater<'_> {
       .iter()
       .flat_map(|slice| slice.chunks_exact(11));
 
-    // Preallocate our temporary array, sized to hold the combined
-    // sat ranges from our inputs.  We'll never need more than that
-    // for a single output, even if we end up splitting some ranges.
     let mut sats = Vec::with_capacity(
       input_sat_ranges
         .iter()
@@ -622,13 +717,16 @@ impl Updater<'_> {
         });
 
         if !Sat(range.0).common() {
-          sat_to_satpoint.insert(
+          dbs.sat_to_satpoint.put(
+            wtx,
             &range.0,
-            &SatPoint {
-              outpoint,
-              offset: output.value.to_sat() - remaining,
-            }
-            .store(),
+            &records::SatPointRecord(
+              SatPoint {
+                outpoint,
+                offset: output.value.to_sat() - remaining,
+              }
+              .store(),
+            ),
           )?;
         }
 
@@ -652,7 +750,7 @@ impl Updater<'_> {
 
       *outputs_traversed += 1;
 
-      output_utxo_entries[vout].push_sat_ranges(&sats, self.index);
+      output_utxo_entries[vout].push_sat_ranges(&sats, index);
       sats.clear();
     }
 
@@ -664,52 +762,70 @@ impl Updater<'_> {
     Ok(())
   }
 
-  fn commit(
-    &mut self,
-    wtx: WriteTransaction,
+  fn commit<'a>(
+    index: &'a Index,
+    store: &'a IndexStore,
+    dbs: &IndexDatabases,
+    mut wtx: RwTxn<'a>,
+    height: u32,
+    outputs_traversed: &mut u64,
+    sat_ranges_since_flush: &mut u64,
     utxo_cache: HashMap<OutPoint, UtxoEntryBuf>,
-  ) -> Result {
+  ) -> Result<RwTxn<'a>> {
     log::info!(
-      "Committing at block height {}, {} outputs traversed, {} in map, {} cached",
-      self.height,
-      self.outputs_traversed,
+      "Committing at block height {height}, {} outputs traversed, {} in map",
+      *outputs_traversed,
       utxo_cache.len(),
-      self.outputs_cached
     );
 
-    {
-      let mut outpoint_to_utxo_entry = wtx.open_table(OUTPOINT_TO_UTXO_ENTRY)?;
-      let mut script_pubkey_to_outpoint = wtx.open_multimap_table(SCRIPT_PUBKEY_TO_OUTPOINT)?;
-      for (outpoint, mut utxo_entry) in utxo_cache {
-        if Index::is_special_outpoint(outpoint)
-          && let Some(old_entry) = outpoint_to_utxo_entry.get(&outpoint.store())?
-        {
-          utxo_entry = UtxoEntryBuf::merged(old_entry.value(), &utxo_entry, self.index);
-        }
+    for (outpoint, mut utxo_entry) in utxo_cache {
+      if Index::is_special_outpoint(outpoint)
+        && let Some(old_entry) = dbs
+          .outpoint_to_utxo_entry
+          .get(&wtx, IndexStore::outpoint_key(&outpoint.store()))?
+      {
+        let old_bytes = old_entry.0.to_vec();
+        utxo_entry = UtxoEntryBuf::merged(
+          UtxoEntry::ref_cast(old_bytes.as_slice()),
+          &utxo_entry,
+          index,
+        );
+      }
 
-        outpoint_to_utxo_entry.insert(&outpoint.store(), utxo_entry.as_ref())?;
+      let key = outpoint.store();
+      dbs.outpoint_to_utxo_entry.put(
+        &mut wtx,
+        IndexStore::outpoint_key(&key),
+        &records::ByteVecRecord(utxo_entry.to_vec()),
+      )?;
 
-        let utxo_entry = utxo_entry.parse(self.index);
-        if self.index.index_addresses {
-          let script_pubkey = utxo_entry.script_pubkey();
-          script_pubkey_to_outpoint.insert(script_pubkey, &outpoint.store())?;
-        }
+      let utxo_entry = utxo_entry.parse(index);
+      if index.index_addresses {
+        let script_pubkey = utxo_entry.script_pubkey();
+        dbs
+          .script_pubkey_to_outpoint
+          .put(&mut wtx, script_pubkey, &key)?;
       }
     }
 
-    Index::increment_statistic(&wtx, Statistic::OutputsTraversed, self.outputs_traversed)?;
-    self.outputs_traversed = 0;
-    Index::increment_statistic(&wtx, Statistic::SatRanges, self.sat_ranges_since_flush)?;
-    self.sat_ranges_since_flush = 0;
-    Index::increment_statistic(&wtx, Statistic::Commits, 1)?;
+    store.increment_statistic(
+      &mut wtx,
+      Statistic::OutputsTraversed.key(),
+      *outputs_traversed,
+    )?;
+    store.increment_statistic(
+      &mut wtx,
+      Statistic::SatRanges.key(),
+      *sat_ranges_since_flush,
+    )?;
+    store.increment_statistic(&mut wtx, Statistic::Commits.key(), 1)?;
+
+    *outputs_traversed = 0;
+    *sat_ranges_since_flush = 0;
     wtx.commit()?;
 
-    // Commit twice since due to a bug redb will only reuse pages freed in the
-    // transaction before last.
-    self.index.begin_write()?.commit()?;
+    Reorg::update_savepoints(index, store, height)?;
 
-    Reorg::update_savepoints(self.index, self.height)?;
-
-    Ok(())
+    store.begin_write().map_err(Into::into)
   }
 }

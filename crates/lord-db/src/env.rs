@@ -1,7 +1,7 @@
-use std::path::Path;
+use std::{mem::ManuallyDrop, path::Path};
 
 use heed3::{
-  Database, Env, EnvOpenOptions,
+  Database, DatabaseFlags, Env, EnvOpenOptions, RoTxn, WithoutTls,
   types::{Bytes, Str},
 };
 
@@ -32,8 +32,18 @@ impl Default for LordEnvOptions {
 
 /// heed3 LMDB environment with schema-version metadata and named-database helpers.
 pub struct LordEnv {
-  env: Env,
-  metadata: Database<Str, Bytes>,
+  metadata: ManuallyDrop<Database<Str, Bytes>>,
+  env: ManuallyDrop<Env<WithoutTls>>,
+}
+
+impl Drop for LordEnv {
+  fn drop(&mut self) {
+    unsafe {
+      ManuallyDrop::drop(&mut self.metadata);
+      let env = ManuallyDrop::take(&mut self.env);
+      env.prepare_for_closing().wait();
+    }
+  }
 }
 
 impl LordEnv {
@@ -46,6 +56,7 @@ impl LordEnv {
 
     let env = unsafe {
       EnvOpenOptions::new()
+        .read_txn_without_tls()
         .map_size(options.map_size)
         .max_dbs(options.max_dbs)
         .open(path)?
@@ -66,10 +77,13 @@ impl LordEnv {
 
     wtxn.commit()?;
 
-    Ok(Self { env, metadata })
+    Ok(Self {
+      metadata: ManuallyDrop::new(metadata),
+      env: ManuallyDrop::new(env),
+    })
   }
 
-  pub fn env(&self) -> &Env {
+  pub fn env(&self) -> &Env<WithoutTls> {
     &self.env
   }
 
@@ -89,9 +103,32 @@ impl LordEnv {
     &self,
     name: &str,
   ) -> Result<Database<K, V>, LordDbError> {
+    self.create_named_database_with_flags::<K, V>(name, DatabaseFlags::empty())
+  }
+
+  pub fn create_named_database_with_flags<K: 'static, V: 'static>(
+    &self,
+    name: &str,
+    flags: DatabaseFlags,
+  ) -> Result<Database<K, V>, LordDbError> {
     let mut wtxn = self.env.write_txn()?;
-    let db = self.env.create_database(&mut wtxn, Some(name))?;
+    let db: Database<K, V> = self
+      .env
+      .database_options()
+      .types::<K, V>()
+      .flags(flags)
+      .name(name)
+      .create(&mut wtxn)?;
     wtxn.commit()?;
+    Ok(db)
+  }
+
+  pub fn open_named_database<K: 'static, V: 'static>(
+    &self,
+    rtxn: &RoTxn,
+    name: &str,
+  ) -> Result<Option<Database<K, V>>, LordDbError> {
+    let db = self.env.open_database(rtxn, Some(name))?;
     Ok(db)
   }
 }

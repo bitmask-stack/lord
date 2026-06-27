@@ -16,9 +16,9 @@
 %% let value = end - start;
 %% let last = end - 1;
 %% if value == 1 {
-  <li><a href=/sat/{{start}} class={{Sat(*start).rarity()}}>{{start}}</a></li>
+  <li><a href=/sat/{{start}} class=common>{{start}}</a></li>
 %% } else {
-  <li><a href=/sat/{{start}} class={{Sat(*start).rarity()}}>{{start}}</a>-<a href=/sat/{{last}} class=common>{{last}}</a> ({{value}} sats)</li>
+  <li><a href=/sat/{{start}} class=common>{{start}}</a>-<a href=/sat/{{last}} class=common>{{last}}</a> ({{value}} sats)</li>
 %% }
 %% }
 </ul>

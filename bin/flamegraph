@@ -32,4 +32,4 @@ rm -f flamegraph.svg
   index
 
 sudo chown -n $UID flamegraph.svg
-sudo chown -n $UID index.redb
+sudo chown -R -n $UID signet/index

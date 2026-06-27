@@ -70,6 +70,7 @@ fn outputs_includes_unbound_outputs() {
   assert!(output[0].sat_ranges.is_none());
 }
 
+#[cfg(feature = "sats")]
 #[test]
 fn outputs_includes_sat_ranges() {
   let core = mockcore::spawn();

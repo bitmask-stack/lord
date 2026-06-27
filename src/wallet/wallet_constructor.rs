@@ -44,7 +44,7 @@ impl WalletConstructor {
   }
 
   pub(crate) fn build(self) -> Result<Wallet> {
-    let database = Wallet::open_database(&self.name, &self.settings)?;
+    let store = WalletStore::open(&self.name, &self.settings)?;
 
     let bitcoin_client = {
       let client =
@@ -124,7 +124,7 @@ impl WalletConstructor {
 
     Ok(Wallet {
       bitcoin_client,
-      database,
+      store,
       has_sat_index: status.sat_index,
       locked_utxos,
       ord_client: self.ord_client,

@@ -73,7 +73,7 @@ fn detect_wrong_descriptors() {
   CommandBuilder::new("wallet transactions")
     .core(&core)
     .stderr_regex(
-      r#"error: wallet "ord" contains unexpected output descriptors, and does not appear to be an `ord` wallet, create a new wallet with `ord wallet create`\n"#,
+      r#"error: wallet "ord" contains unexpected output descriptors, and does not appear to be a lord wallet, create a new wallet with `lord wallet create`\n"#,
     )
     .expected_exit_code(1)
     .run_and_extract_stdout();

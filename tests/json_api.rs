@@ -3,6 +3,7 @@ use {
   bitcoin::{BlockHash, ScriptBuf},
 };
 
+#[cfg(feature = "sats")]
 #[test]
 fn get_sat_without_sat_index() {
   let core = mockcore::spawn();
@@ -38,6 +39,7 @@ fn get_sat_without_sat_index() {
   )
 }
 
+#[cfg(feature = "sats")]
 #[test]
 fn get_output() {
   let core = mockcore::spawn();
@@ -113,8 +115,8 @@ fn get_output() {
 fn json_request_fails_when_disabled() {
   let core = mockcore::spawn();
 
-  let response = TestServer::spawn_with_server_args(&core, &[], &["--disable-json-api"])
-    .json_request("/sat/2099999997689999");
+  let response =
+    TestServer::spawn_with_server_args(&core, &[], &["--disable-json-api"]).json_request("/status");
 
   assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
 }
@@ -202,6 +204,133 @@ fn get_transaction() {
 }
 
 #[test]
+fn get_status_without_sats_feature() {
+  let core = mockcore::builder().network(Network::Regtest).build();
+
+  let ord = TestServer::spawn_with_server_args(&core, &["--regtest"], &[]);
+
+  create_wallet(&core, &ord);
+  core.mine_blocks(1);
+
+  let response = ord.json_request("/status");
+
+  assert_eq!(response.status(), StatusCode::OK);
+
+  let mut status_json: api::Status = serde_json::from_str(&response.text().unwrap()).unwrap();
+
+  let dummy_started = "2012-12-12 12:12:12+00:00"
+    .parse::<DateTime<Utc>>()
+    .unwrap();
+
+  let dummy_duration = Duration::from_secs(1);
+
+  status_json.initial_sync_time = dummy_duration;
+  status_json.started = dummy_started;
+  status_json.uptime = dummy_duration;
+
+  pretty_assert_eq!(
+    status_json,
+    api::Status {
+      address_index: false,
+      chain: Chain::Regtest,
+      height: Some(1),
+      initial_sync_time: dummy_duration,
+      json_api: true,
+      lost_sats: 0,
+      sat_index: false,
+      started: dummy_started,
+      unrecoverably_reorged: false,
+      uptime: dummy_duration,
+    }
+  );
+}
+
+#[test]
+fn get_output_without_sats_feature() {
+  let core = mockcore::spawn();
+  let ord = TestServer::spawn(&core);
+
+  create_wallet(&core, &ord);
+  core.mine_blocks(3);
+
+  let txid = core.broadcast_tx(TransactionTemplate {
+    inputs: &[
+      (1, 0, 0, Witness::new()),
+      (2, 0, 0, Witness::new()),
+      (3, 0, 0, Witness::new()),
+    ],
+    ..default()
+  });
+
+  core.mine_blocks(1);
+
+  let server = TestServer::spawn_with_server_args(&core, &[], &[]);
+
+  let response = server.json_request(format!("/output/{txid}:0"));
+
+  assert_eq!(response.status(), StatusCode::OK);
+
+  let output_json: api::Output = serde_json::from_str(&response.text().unwrap()).unwrap();
+
+  pretty_assert_eq!(
+    output_json,
+    api::Output {
+      address: Some(
+        "bc1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq9e75rs"
+          .parse()
+          .unwrap()
+      ),
+      confirmations: 1,
+      outpoint: OutPoint { txid, vout: 0 },
+      indexed: false,
+      sat_ranges: None,
+      script_pubkey: ScriptBuf::from(
+        "bc1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq9e75rs"
+          .parse::<Address<NetworkUnchecked>>()
+          .unwrap()
+          .assume_checked()
+      ),
+      spent: false,
+      transaction: txid,
+      value: 3 * 50 * COIN_VALUE,
+    }
+  );
+}
+
+#[test]
+fn get_output_with_address_index_without_sats_feature() {
+  let core = mockcore::spawn();
+  let ord = TestServer::spawn_with_args(&core, &["--index-addresses"]);
+
+  create_wallet(&core, &ord);
+  core.mine_blocks(3);
+
+  let txid = core.broadcast_tx(TransactionTemplate {
+    inputs: &[
+      (1, 0, 0, Witness::new()),
+      (2, 0, 0, Witness::new()),
+      (3, 0, 0, Witness::new()),
+    ],
+    ..default()
+  });
+
+  core.mine_blocks(1);
+
+  let server = TestServer::spawn_with_server_args(&core, &["--index-addresses"], &[]);
+
+  let response = server.json_request(format!("/output/{txid}:0"));
+
+  assert_eq!(response.status(), StatusCode::OK);
+
+  let output_json: api::Output = serde_json::from_str(&response.text().unwrap()).unwrap();
+
+  assert!(output_json.indexed);
+  assert_eq!(output_json.value, 3 * 50 * COIN_VALUE);
+  assert_eq!(output_json.confirmations, 1);
+}
+
+#[cfg(feature = "sats")]
+#[test]
 fn get_status() {
   let core = mockcore::builder().network(Network::Regtest).build();
 
@@ -237,7 +366,6 @@ fn get_status() {
       lost_sats: 0,
       sat_index: true,
       started: dummy_started,
-      transaction_index: false,
       unrecoverably_reorged: false,
       uptime: dummy_duration,
     }

@@ -124,7 +124,11 @@ impl CommandBuilder {
   }
 
   pub(crate) fn write(self, path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> Self {
-    fs::write(self.tempdir.path().join(path), contents).unwrap();
+    let path = self.tempdir.path().join(path);
+    if let Some(parent) = path.parent() {
+      fs::create_dir_all(parent).unwrap();
+    }
+    fs::write(path, contents).unwrap();
     self
   }
 
