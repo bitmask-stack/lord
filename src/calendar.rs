@@ -3,8 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use lord_calendar::{
-  CalendarConfig, CalendarService, anchor_config_for_chain, save_active_uri, spawn_anchor_worker,
-  spawn_http,
+  CalendarConfig, CalendarService, save_active_uri, spawn_anchor_worker, spawn_http,
 };
 use tokio::task::JoinHandle;
 
@@ -34,7 +33,7 @@ pub fn spawn_embedded_calendar(settings: &Settings) -> Result<SpawnedCalendar> {
     rpc_url,
     auth,
     settings.chain().network(),
-    anchor_config_for_chain(settings.calendar_chain()),
+    settings.anchor_config(),
   );
   let http = spawn_http((*service).clone(), listen);
   log::info!("embedded calendar listening on http://{listen}");

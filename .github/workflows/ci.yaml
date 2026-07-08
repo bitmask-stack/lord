@@ -113,5 +113,8 @@ jobs:
     - name: Smoke (calendar + commit dry-run)
       run: cargo test --test integration smoke:: -- --nocapture
 
+    - name: P2P smoke (Iroh loopback gossip)
+      run: cargo test -p lord-iroh --test loopback_gossip -- --nocapture --test-threads=1
+
     - name: Test
       run: cargo test --all

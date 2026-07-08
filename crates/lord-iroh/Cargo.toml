@@ -1,0 +1,35 @@
+[package]
+name = "lord-iroh"
+version = "0.1.0"
+description = "Iroh P2P transport for Lord Transport Protocol"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1.0.90"
+bytes = "1.11"
+hex.workspace = true
+iroh = "1"
+iroh-gossip = { version = "0.101", features = ["net"] }
+lord-ltp = { path = "../lord-ltp" }
+lord-storage = { path = "../lord-storage" }
+n0-future = "0.3"
+postcard = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { version = "1.43.0", features = ["rt-multi-thread", "sync", "time", "macros", "io-util"] }
+tracing = "0.1"
+
+[dev-dependencies]
+anyhow = "1.0.90"
+bytes = "1.11"
+lord-ltp = { path = "../lord-ltp" }
+serde_json = { workspace = true }
+tempfile.workspace = true
+tokio = { version = "1.43.0", features = ["rt-multi-thread", "macros", "time"] }
+
+[[test]]
+name = "loopback_gossip"
+path = "tests/loopback_gossip.rs"

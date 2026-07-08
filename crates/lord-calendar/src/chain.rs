@@ -40,6 +40,17 @@ impl Chain {
   pub fn calendar_dir_chain_scoped(chain_scoped_data_dir: impl AsRef<Path>) -> PathBuf {
     chain_scoped_data_dir.as_ref().join("calendar")
   }
+
+  /// Infer chain from a chain-scoped data directory path (`…/regtest`, `…/signet`, etc.).
+  pub fn from_chain_scoped_data_dir(data_dir: impl AsRef<Path>) -> Self {
+    match data_dir.as_ref().file_name().and_then(|s| s.to_str()) {
+      Some("regtest") => Self::Regtest,
+      Some("signet") => Self::Signet,
+      Some("testnet3") => Self::Testnet,
+      Some("testnet4") => Self::Testnet4,
+      _ => Self::Mainnet,
+    }
+  }
 }
 
 impl From<Chain> for Network {

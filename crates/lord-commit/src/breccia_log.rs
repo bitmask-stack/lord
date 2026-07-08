@@ -9,7 +9,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 const MAGIC: &[u8] = b"LORBRECC";
-const HEADER_VERSION: u32 = 1;
+pub const BRECCIA_HEADER_VERSION_V1: u32 = 1;
+pub const BRECCIA_HEADER_VERSION_V2: u32 = 2;
 const HEADER_LEN: u64 = (MAGIC.len() + 4) as u64;
 
 /// Maximum serialized blob length accepted on read or append.
@@ -69,7 +70,7 @@ impl BrecciaLogMut {
       .with_context(|| format!("failed to create `{}`", path.display()))?;
 
     file.write_all(MAGIC)?;
-    file.write_all(&HEADER_VERSION.to_le_bytes())?;
+    file.write_all(&BRECCIA_HEADER_VERSION_V1.to_le_bytes())?;
     file.sync_all()?;
 
     Ok(Self { file })
@@ -90,11 +91,22 @@ impl BrecciaLogMut {
 
     let mut version = [0u8; 4];
     file.read_exact(&mut version)?;
-    if u32::from_le_bytes(version) != HEADER_VERSION {
+    let header_version = u32::from_le_bytes(version);
+    if header_version != BRECCIA_HEADER_VERSION_V1 && header_version != BRECCIA_HEADER_VERSION_V2 {
       anyhow::bail!("unsupported breccia header version in `{}`", path.display());
     }
 
     Ok(Self { file })
+  }
+
+  /// Bump file header to v2 when appending the first v2 entry (no rewrite of v1 blobs).
+  pub fn ensure_v2_header(&mut self) -> Result<()> {
+    self.file.seek(SeekFrom::Start(MAGIC.len() as u64))?;
+    self
+      .file
+      .write_all(&BRECCIA_HEADER_VERSION_V2.to_le_bytes())?;
+    self.file.sync_all()?;
+    Ok(())
   }
 
   pub fn append_blob(&mut self, blob: &[u8]) -> Result<u64> {

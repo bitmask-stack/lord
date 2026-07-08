@@ -42,11 +42,38 @@ impl DigestQueue {
     let n = self.pending.len().min(max);
     self.pending.drain(..n).collect()
   }
+
+  /// Drain up to `max` digests, preferring `priority` digests that are still pending.
+  pub fn drain_batch_prioritized(&mut self, priority: &[[u8; 32]], max: usize) -> Vec<[u8; 32]> {
+    let mut batch = Vec::new();
+    for digest in priority {
+      if batch.len() >= max {
+        break;
+      }
+      if let Some(index) = self.pending.iter().position(|d| d == digest) {
+        batch.push(self.pending.remove(index));
+      }
+    }
+    batch.extend(self.drain_batch(max.saturating_sub(batch.len())));
+    batch
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn drain_batch_prioritized_prefers_ltp_digests() {
+    let mut queue = DigestQueue::default();
+    let low = [1u8; 32];
+    let high = [2u8; 32];
+    queue.enqueue(low);
+    queue.enqueue(high);
+    let batch = queue.drain_batch_prioritized(&[high, low], 1);
+    assert_eq!(batch, vec![high]);
+    assert_eq!(queue.pending, vec![low]);
+  }
 
   #[test]
   fn queue_roundtrip() {

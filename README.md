@@ -231,9 +231,11 @@ Tests are required for new logic. With [just](https://github.com/casey/just) ins
 
 ```sh
 just deps-check   # verify carbonado + bao-tree siblings
-just smoke        # fast integration smoke (calendar + commit dry-run)
-just ci-local     # deps-check → smoke → clippy → forbid → fmt → test-all
-just ci           # fmt, clippy, full test suite (includes smoke)
+just test         # smoke + p2p-smoke + cargo test --all (full suite)
+just smoke        # integration smoke only (calendar, commit, ltp, p2p CLI)
+just p2p-smoke    # Iroh loopback gossip integration test
+just ci-local     # deps-check → clippy → forbid → fmt → test
+just ci           # clippy, forbid, fmt, test, ignored tests
 just ceremony                    # regtest encode + dry-run timestamp + --full verify
 just ceremony signet             # signet encode + live-step instructions (see ACCEPTANCE-SIGNET.md)
 ```

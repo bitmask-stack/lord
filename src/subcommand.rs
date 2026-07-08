@@ -11,6 +11,8 @@ pub mod find;
 pub mod index;
 #[cfg(feature = "sats")]
 pub mod list;
+pub mod ltp;
+pub mod p2p;
 #[cfg(feature = "sats")]
 pub mod parse;
 pub mod server;
@@ -54,6 +56,10 @@ pub(crate) enum Subcommand {
   Commit(commit::Commit),
   #[command(about = "OpenTimestamps calendar helpers")]
   Calendar(calendar::Calendar),
+  #[command(about = "Lord Transport Protocol local mempool")]
+  Ltp(ltp::Ltp),
+  #[command(about = "Iroh P2P transport for LTP")]
+  P2p(p2p::P2p),
   #[command(about = "Filepack manifest commands")]
   Filepack(filepack::Filepack),
   #[cfg(feature = "sats")]
@@ -96,6 +102,8 @@ impl Subcommand {
       Self::Storage(storage) => storage.run(settings),
       Self::Commit(commit) => commit.run(settings),
       Self::Calendar(calendar) => calendar.run(settings),
+      Self::Ltp(ltp) => ltp.run(settings),
+      Self::P2p(p2p) => p2p.run(settings),
       Self::Filepack(filepack) => filepack.run(settings),
       #[cfg(feature = "sats")]
       Self::Subsidy(subsidy) => subsidy.run(),

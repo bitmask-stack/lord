@@ -19,6 +19,11 @@ chain: mainnet
 # calendar_listen: 127.0.0.1:14788
 # calendar_uri: http://127.0.0.1:14788
 # calendar_url: http://127.0.0.1:14788/timestamp
+# calendar_max_anchor_fee_sats: 50000
+# calendar_min_wallet_balance_sats: 100000
+# calendar_ltp_priority: true
+# p2p_bootstrap_peers:
+#   - "<iroh-endpoint-id-hex>"
 commit_interval: 10000
 config: /var/lib/lord/lord.yaml
 config_dir: /var/lib/lord

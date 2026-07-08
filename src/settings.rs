@@ -13,6 +13,10 @@ pub struct Settings {
   calendar_listen: Option<String>,
   calendar_uri: Option<String>,
   calendar_url: Option<String>,
+  calendar_max_anchor_fee_sats: Option<u64>,
+  calendar_min_wallet_balance_sats: Option<u64>,
+  calendar_ltp_priority: bool,
+  p2p_bootstrap_peers: Option<Vec<String>>,
   commit_interval: Option<usize>,
   config: Option<PathBuf>,
   config_dir: Option<PathBuf>,
@@ -129,6 +133,14 @@ impl Settings {
       calendar_listen: self.calendar_listen.or(source.calendar_listen),
       calendar_uri: self.calendar_uri.or(source.calendar_uri),
       calendar_url: self.calendar_url.or(source.calendar_url),
+      calendar_max_anchor_fee_sats: self
+        .calendar_max_anchor_fee_sats
+        .or(source.calendar_max_anchor_fee_sats),
+      calendar_min_wallet_balance_sats: self
+        .calendar_min_wallet_balance_sats
+        .or(source.calendar_min_wallet_balance_sats),
+      calendar_ltp_priority: self.calendar_ltp_priority || source.calendar_ltp_priority,
+      p2p_bootstrap_peers: self.p2p_bootstrap_peers.or(source.p2p_bootstrap_peers),
       commit_interval: self.commit_interval.or(source.commit_interval),
       config: self.config.or(source.config),
       config_dir: self.config_dir.or(source.config_dir),
@@ -167,6 +179,10 @@ impl Settings {
       calendar_listen: None,
       calendar_uri: None,
       calendar_url: None,
+      calendar_max_anchor_fee_sats: None,
+      calendar_min_wallet_balance_sats: None,
+      calendar_ltp_priority: false,
+      p2p_bootstrap_peers: None,
       commit_interval: options.commit_interval,
       config: options.config,
       config_dir: options.config_dir,
@@ -223,6 +239,14 @@ impl Settings {
         .with_context(|| format!("failed to parse environment variable ORD_{key} as u32"))
     };
 
+    let get_u64 = |key| {
+      env
+        .get(key)
+        .map(|int| int.parse::<u64>())
+        .transpose()
+        .with_context(|| format!("failed to parse environment variable ORD_{key} as u64"))
+    };
+
     let get_usize = |key| {
       env
         .get(key)
@@ -242,6 +266,16 @@ impl Settings {
       calendar_listen: get_string("CALENDAR_LISTEN"),
       calendar_uri: get_string("CALENDAR_URI"),
       calendar_url: get_string("CALENDAR_URL"),
+      calendar_max_anchor_fee_sats: get_u64("CALENDAR_MAX_ANCHOR_FEE_SATS")?,
+      calendar_min_wallet_balance_sats: get_u64("CALENDAR_MIN_WALLET_BALANCE_SATS")?,
+      calendar_ltp_priority: get_bool("CALENDAR_LTP_PRIORITY"),
+      p2p_bootstrap_peers: env.get("P2P_BOOTSTRAP_PEERS").map(|value| {
+        value
+          .split(',')
+          .map(str::trim)
+          .map(str::to_string)
+          .collect()
+      }),
       commit_interval: get_usize("COMMIT_INTERVAL")?,
       config: get_path("CONFIG"),
       config_dir: get_path("CONFIG_DIR"),
@@ -274,6 +308,10 @@ impl Settings {
       calendar_listen: None,
       calendar_uri: None,
       calendar_url: None,
+      calendar_max_anchor_fee_sats: None,
+      calendar_min_wallet_balance_sats: None,
+      calendar_ltp_priority: false,
+      p2p_bootstrap_peers: None,
       commit_interval: None,
       config: None,
       config_dir: None,
@@ -343,6 +381,10 @@ impl Settings {
       calendar_listen: self.calendar_listen,
       calendar_uri: self.calendar_uri,
       calendar_url: self.calendar_url,
+      calendar_max_anchor_fee_sats: self.calendar_max_anchor_fee_sats,
+      calendar_min_wallet_balance_sats: self.calendar_min_wallet_balance_sats,
+      calendar_ltp_priority: self.calendar_ltp_priority,
+      p2p_bootstrap_peers: self.p2p_bootstrap_peers,
       commit_interval: Some(self.commit_interval.unwrap_or(5000)),
       config: None,
       config_dir: None,
@@ -505,6 +547,22 @@ impl Settings {
 
   pub fn calendar_chain(&self) -> lord_calendar::Chain {
     self.chain().into()
+  }
+
+  pub fn calendar_ltp_priority(&self) -> bool {
+    self.calendar_ltp_priority
+  }
+
+  pub fn anchor_config(&self) -> lord_calendar::AnchorConfig {
+    let mut config = lord_calendar::anchor_config_for_chain(self.calendar_chain());
+    config.max_anchor_fee_sats = self.calendar_max_anchor_fee_sats;
+    config.min_wallet_balance_sats = self.calendar_min_wallet_balance_sats;
+    config.ltp_priority = self.calendar_ltp_priority();
+    config
+  }
+
+  pub fn p2p_bootstrap_peers(&self) -> Vec<String> {
+    self.p2p_bootstrap_peers.clone().unwrap_or_default()
   }
 
   pub fn commit_interval(&self) -> usize {
@@ -1239,6 +1297,10 @@ mod tests {
         calendar_listen: Some("127.0.0.1:14788".into()),
         calendar_uri: Some("http://127.0.0.1:14788".into()),
         calendar_url: Some("http://calendar.example/timestamp".into()),
+        calendar_max_anchor_fee_sats: None,
+        calendar_min_wallet_balance_sats: None,
+        calendar_ltp_priority: false,
+        p2p_bootstrap_peers: None,
         commit_interval: Some(1),
         savepoint_interval: Some(10),
         max_savepoints: Some(2),
@@ -1301,6 +1363,10 @@ mod tests {
         calendar_listen: None,
         calendar_uri: None,
         calendar_url: None,
+        calendar_max_anchor_fee_sats: None,
+        calendar_min_wallet_balance_sats: None,
+        calendar_ltp_priority: false,
+        p2p_bootstrap_peers: None,
         commit_interval: Some(1),
         savepoint_interval: Some(10),
         max_savepoints: Some(2),

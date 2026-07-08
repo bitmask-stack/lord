@@ -14,6 +14,7 @@ bitcoin = { workspace = true }
 bitcoincore-rpc = "0.19.0"
 hex.workspace = true
 log = "0.4.14"
+lord-ltp = { path = "../lord-ltp" }
 lord-storage = { path = "../lord-storage" }
 opentimestamps = "0.2.0"
 parking_lot = "0.12"

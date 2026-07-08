@@ -248,9 +248,16 @@ is [Peter Todd's breccia](https://github.com/petertodd/python-breccia) mark-word
 database for global replication and coordination.
 
 **PR3 (implemented):** `{data_dir}/breccia/global.breccia` is a lord-specific
-append log (`LORBRECC` magic + length-prefixed bincode `CommitmentEntry` blobs).
-It is **not** the Peter Todd breccia format; migration or federation with that
-format is planned for a later phase.
+append log (`LORBRECC` file-header magic + `u32` header version). Each appended
+blob is length-prefixed:
+
+- **v1** — bincode `CommitmentEntry` (bao root, order key, timestamp, carbonado path)
+- **v2 (Phase B)** — `LBV2` magic + bincode `CommitmentEntryV2` adding Bitcoin
+  attestation metadata (`attestation_height`, `attestation_txid`, `replication_target`)
+
+The file header bumps to version 2 on first v2 append (`ensure_v2_header`) without
+rewriting existing v1 blobs. It is **not** the Peter Todd breccia format; migration
+or federation with that format is planned for a later phase.
 
 ### Role
 
@@ -382,7 +389,9 @@ Open Questions and TODOs
 | Mutual-aid reciprocity scoring algorithm | **TODO** |
 | Cross-calendar OTS ordering aggregation | **Deferred** — single embedded calendar per chain; federation later |
 | Bao sampling parameters (frequency, challenge size) | **Open** — tune under load |
-| Breccia federation / replication state fields | **Partial** — `lord-commit` append log shipped; federation schema TBD |
+| Breccia federation / replication state fields | **Partial** — Phase B adds breccia v2 attestation fields + LTP gossip; full federation TBD |
+| LTP Iroh transport + local mempool | **Shipped (Phase B)** — `lord-ltp`, `lord-iroh`, `lord ltp *`, `lord p2p *` |
+| Calendar anchor fee caps | **Shipped (Phase B)** — `calendar_max_anchor_fee_sats`, `calendar_min_wallet_balance_sats` |
 | OTS ↔ Carbonado ↔ filepack binding | **Resolved** — `SHA256(bao_root)` as OTS start digest; `ots_order_key` from merkle-path encoding; see [implementation notes](implementation.md) and [commitments guide](../guides/commitments.md) |
 | API/CLI surface (inscription/rune removal, storage/commit/calendar) | **Resolved** — PR0–PR3 + operator stack shipped |
 | Migration path from ord codebase | **Resolved** — heed3 index/wallet, slim server, `lord.yaml` default probe |

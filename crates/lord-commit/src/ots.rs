@@ -13,11 +13,15 @@ use opentimestamps::{
 };
 
 use crate::breccia_log::BrecciaLog;
-use crate::entry::{CommitmentEntry, decode_entry, encode_entry};
+use crate::entry::{
+  BrecciaRecord, CommitmentEntry, CommitmentEntryV2, decode_breccia_blob, encode_entry,
+  encode_entry_v2,
+};
 use crate::ots_attest::{
   AttestationVerifyStatus, BlockHeaderSource, verify_timestamp_attestations,
 };
 use crate::ots_order::order_key_from_proof_bytes;
+use lord_ltp::{LtpMempool, LtpMempoolEntry, LtpQueueKind};
 
 pub use lord_calendar::Chain;
 
@@ -135,6 +139,8 @@ pub struct CrossStoreVerifyResult {
   pub lmdb_order_key_matches_proof: bool,
   pub breccia_entry_found: bool,
   pub breccia_matches_lmdb: bool,
+  pub breccia_v2_found: bool,
+  pub breccia_attestation_height_valid: bool,
   pub carbonado_file_exists: bool,
   pub carbonado_binding_valid: bool,
   pub valid: bool,
@@ -370,6 +376,14 @@ pub fn upgrade_commitment(
   let order_key_changed = meta.ots_order_key.as_deref() != Some(new_order_bytes.as_slice());
 
   if proof_unchanged && !order_key_changed {
+    maybe_append_breccia_v2_and_enqueue_ltp(
+      data_dir,
+      &bao_root,
+      bao_root_hex,
+      &meta,
+      &upgraded_proof,
+      &new_order_bytes,
+    )?;
     return Ok(UpgradeResult {
       bao_root: bao_root_hex.into(),
       ots_proof_path: relative_proof_path,
@@ -391,6 +405,14 @@ pub fn upgrade_commitment(
       &bao_root,
       previous_order_key.as_deref(),
       &updated,
+      &new_order_bytes,
+    )?;
+    maybe_append_breccia_v2_and_enqueue_ltp(
+      data_dir,
+      &bao_root,
+      bao_root_hex,
+      &updated,
+      &upgraded_proof,
       &new_order_bytes,
     )?;
     return Ok(UpgradeResult {
@@ -440,6 +462,15 @@ pub fn upgrade_commitment(
     return Err(err);
   }
   let _ = std::fs::remove_file(&pending_proof_path);
+
+  maybe_append_breccia_v2_and_enqueue_ltp(
+    data_dir,
+    &bao_root,
+    bao_root_hex,
+    &updated,
+    &upgraded_proof,
+    &new_order_bytes,
+  )?;
 
   Ok(UpgradeResult {
     bao_root: bao_root_hex.into(),
@@ -554,10 +585,102 @@ fn pending_ots_path(proof_path: &Path) -> std::path::PathBuf {
 
 fn breccia_contains_bao_root(data_dir: &Path, bao_root: &[u8; 32]) -> Result<bool> {
   Ok(
-    read_breccia_entries(data_dir)?
+    read_breccia_records(data_dir)?
       .iter()
-      .any(|entry| entry.bao_root == *bao_root),
+      .any(|record| record.bao_root() == *bao_root),
   )
+}
+
+fn breccia_has_v2_for_root(data_dir: &Path, bao_root: &[u8; 32]) -> Result<bool> {
+  Ok(
+    read_breccia_records(data_dir)?
+      .iter()
+      .any(|record| matches!(record, BrecciaRecord::V2(entry) if entry.bao_root == *bao_root)),
+  )
+}
+
+fn attestation_height_from_proof(proof_bytes: &[u8]) -> Option<u32> {
+  let file = DetachedTimestampFile::from_reader(Cursor::new(proof_bytes)).ok()?;
+  attestation_height_from_step(&file.timestamp.first_step)
+}
+
+fn attestation_height_from_step(step: &Step) -> Option<u32> {
+  if let StepData::Attestation(Attestation::Bitcoin { height }) = &step.data {
+    return Some(*height as u32);
+  }
+  step.next.iter().find_map(attestation_height_from_step)
+}
+
+fn maybe_append_breccia_v2_and_enqueue_ltp(
+  data_dir: &Path,
+  bao_root: &[u8; 32],
+  bao_root_hex: &str,
+  meta: &CommitmentMeta,
+  proof_bytes: &[u8],
+  order_key_bytes: &[u8],
+) -> Result<()> {
+  let Some(height) = attestation_height_from_proof(proof_bytes) else {
+    return Ok(());
+  };
+  if breccia_has_v2_for_root(data_dir, bao_root)? {
+    enqueue_breccia_tail_ltp(
+      data_dir,
+      bao_root,
+      bao_root_hex,
+      order_key_bytes,
+      Some(height),
+    )?;
+    return Ok(());
+  }
+  let timestamped_at = meta.timestamped_at.unwrap_or(meta.created_at);
+  let entry = CommitmentEntryV2::new(
+    *bao_root,
+    order_key_bytes.to_vec(),
+    timestamped_at,
+    meta.carbonado_path.clone(),
+    height,
+    String::new(),
+    0,
+  );
+  let mut breccia = BrecciaLog::new(data_dir).open_or_create()?;
+  breccia.ensure_v2_header()?;
+  breccia
+    .append_blob(&encode_entry_v2(&entry))
+    .context("failed to append breccia v2 entry")?;
+  enqueue_breccia_tail_ltp(
+    data_dir,
+    bao_root,
+    bao_root_hex,
+    order_key_bytes,
+    Some(height),
+  )?;
+  Ok(())
+}
+
+fn enqueue_breccia_tail_ltp(
+  data_dir: &Path,
+  bao_root: &[u8; 32],
+  _bao_root_hex: &str,
+  _order_key_bytes: &[u8],
+  _attestation_height: Option<u32>,
+) -> Result<()> {
+  let chain = lord_ltp::LtpChain::from_chain_scoped_data_dir(data_dir);
+  let digest: [u8; 32] = commitment_digest(bao_root)
+    .try_into()
+    .map_err(|_| anyhow::anyhow!("commitment digest must be 32 bytes"))?;
+  let mut mempool = LtpMempool::open(data_dir, chain)?;
+  let now = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .context("system time before unix epoch")?
+    .as_secs();
+  let _ = mempool.enqueue(LtpMempoolEntry {
+    bao_root: *bao_root,
+    start_digest: digest,
+    enqueued_at: now,
+    priority: 0,
+    queue: LtpQueueKind::Commitment,
+  })?;
+  Ok(())
 }
 
 fn repair_breccia_from_meta(
@@ -738,16 +861,32 @@ fn verify_cross_store(
     },
   };
 
-  let breccia_entries = read_breccia_entries(data_dir).unwrap_or_default();
-  let breccia_entry = breccia_entries
-    .iter()
-    .find(|entry| entry.bao_root == *bao_root);
-  let breccia_entry_found = breccia_entry.is_some();
+  let breccia_records = read_breccia_records(data_dir).unwrap_or_default();
+  let breccia_v1 = breccia_records.iter().find_map(|record| match record {
+    BrecciaRecord::V1(entry) if entry.bao_root == *bao_root => Some(entry),
+    _ => None,
+  });
+  let breccia_v2 = breccia_records.iter().find_map(|record| match record {
+    BrecciaRecord::V2(entry) if entry.bao_root == *bao_root => Some(entry),
+    _ => None,
+  });
+  let breccia_entry_found = breccia_v1.is_some() || breccia_v2.is_some();
   if !breccia_entry_found {
     mismatches.push("breccia has no entry for bao_root".into());
   }
 
-  let breccia_matches_lmdb = if let Some(entry) = breccia_entry {
+  let breccia_matches_lmdb = if let Some(entry) = breccia_v2 {
+    let mut matches = true;
+    if meta.ots_order_key.as_deref() != Some(entry.ots_order_key.as_slice()) {
+      mismatches.push("breccia v2 ots_order_key does not match LMDB".into());
+      matches = false;
+    }
+    if meta.carbonado_path != entry.carbonado_path && !entry.carbonado_path.is_empty() {
+      mismatches.push("breccia v2 carbonado_path does not match LMDB".into());
+      matches = false;
+    }
+    matches
+  } else if let Some(entry) = breccia_v1 {
     let mut matches = true;
     if meta.ots_order_key.as_deref() != Some(entry.ots_order_key.as_slice()) {
       mismatches.push("breccia ots_order_key does not match LMDB".into());
@@ -764,6 +903,24 @@ fn verify_cross_store(
     matches
   } else {
     false
+  };
+
+  let breccia_v2_found = breccia_v2.is_some();
+  let proof_attestation_height = attestation_height_from_proof(proof_bytes);
+  let breccia_attestation_height_valid = match (breccia_v2, proof_attestation_height) {
+    (Some(entry), Some(height)) if entry.attestation_height == height => true,
+    (Some(_), Some(height)) => {
+      mismatches.push(format!(
+        "breccia v2 attestation_height does not match OTS proof ({height})"
+      ));
+      false
+    }
+    (Some(_), None) => true,
+    (None, Some(_)) => {
+      mismatches.push("confirmed OTS attestation but breccia v2 entry missing".into());
+      false
+    }
+    (None, None) => true,
   };
 
   let carbonado_file_exists = StoragePaths::new(data_dir)
@@ -794,6 +951,7 @@ fn verify_cross_store(
     && lmdb_order_key_matches_proof
     && breccia_entry_found
     && breccia_matches_lmdb
+    && breccia_attestation_height_valid
     && carbonado_file_exists
     && carbonado_binding_valid;
 
@@ -803,6 +961,8 @@ fn verify_cross_store(
     lmdb_order_key_matches_proof,
     breccia_entry_found,
     breccia_matches_lmdb,
+    breccia_v2_found,
+    breccia_attestation_height_valid,
     carbonado_file_exists,
     carbonado_binding_valid,
     valid,
@@ -828,7 +988,8 @@ pub fn verify_commitment_full(
   drop(store);
 
   let proof_bytes = if let Some(proof_path) = meta.ots_proof_path.as_ref() {
-    std::fs::read(data_dir.join(proof_path)).unwrap_or_default()
+    std::fs::read(data_dir.join(proof_path))
+      .with_context(|| format!("failed to read OTS proof file `{proof_path}`"))?
   } else {
     Vec::new()
   };
@@ -876,11 +1037,100 @@ pub fn list_commitments(data_dir: impl AsRef<Path>) -> Result<Vec<CommitmentList
   Ok(entries)
 }
 
-/// Read all commitment entries from breccia (for tests/diagnostics).
-pub fn read_breccia_entries(data_dir: impl AsRef<Path>) -> Result<Vec<CommitmentEntry>> {
+/// Read all breccia records (v1 and v2) from the append log.
+pub fn read_breccia_records(data_dir: impl AsRef<Path>) -> Result<Vec<BrecciaRecord>> {
   let log = BrecciaLog::new(&data_dir);
   let blobs = log.read_all()?;
-  blobs.into_iter().map(|blob| decode_entry(&blob)).collect()
+  blobs
+    .into_iter()
+    .map(|blob| decode_breccia_blob(&blob))
+    .collect()
+}
+
+/// Read v1 commitment entries from breccia (for tests/diagnostics).
+pub fn read_breccia_entries(data_dir: impl AsRef<Path>) -> Result<Vec<CommitmentEntry>> {
+  Ok(
+    read_breccia_records(&data_dir)?
+      .into_iter()
+      .filter_map(|record| match record {
+        BrecciaRecord::V1(entry) => Some(entry),
+        BrecciaRecord::V2(_) => None,
+      })
+      .collect(),
+  )
+}
+
+/// Merge staged inbound breccia tails idempotently (by `bao_root` v2 presence).
+pub fn import_inbound_tails(data_dir: impl AsRef<Path>) -> Result<usize> {
+  use lord_ltp::{read_inbound_tails, validate_breccia_tail_payload, validate_ltp_frame_version};
+
+  let data_dir = data_dir.as_ref();
+  let records = read_inbound_tails(data_dir)?;
+  let store = StorageStore::open(data_dir)?;
+  let mut imported = 0usize;
+  for record in records {
+    if let Err(err) = validate_ltp_frame_version(&record.frame) {
+      log::warn!("skipping inbound tail: {err:#}");
+      continue;
+    }
+    let tail = record.tail;
+    if let Err(err) = validate_breccia_tail_payload(&tail) {
+      log::warn!("skipping inbound tail with invalid binding: {err:#}");
+      continue;
+    }
+    let Some(height) = tail.attestation_height else {
+      log::warn!(
+        "skipping inbound tail for {}: attestation_height required",
+        hex::encode(tail.bao_root)
+      );
+      continue;
+    };
+    if breccia_has_v2_for_root(data_dir, &tail.bao_root)? {
+      continue;
+    }
+    let rtxn = store.begin_read()?;
+    let Some(meta) = store.get_commitment(&rtxn, &tail.bao_root)? else {
+      log::warn!(
+        "skipping inbound tail for unknown bao_root {}",
+        hex::encode(tail.bao_root)
+      );
+      continue;
+    };
+    if meta.ots_order_key.as_deref() != Some(tail.ots_order_key.as_slice()) {
+      log::warn!(
+        "skipping inbound tail for {}: ots_order_key does not match LMDB",
+        hex::encode(tail.bao_root)
+      );
+      continue;
+    }
+    if let Some(proof_path) = meta.ots_proof_path.as_ref() {
+      let proof_bytes = std::fs::read(data_dir.join(proof_path)).ok();
+      if let Some(proof_bytes) = proof_bytes
+        && let Some(proof_height) = attestation_height_from_proof(&proof_bytes)
+        && proof_height != height
+      {
+        log::warn!(
+          "skipping inbound tail for {}: attestation_height does not match local OTS proof",
+          hex::encode(tail.bao_root)
+        );
+        continue;
+      }
+    }
+    let entry = CommitmentEntryV2::new(
+      tail.bao_root,
+      tail.ots_order_key,
+      meta.timestamped_at.unwrap_or(meta.created_at),
+      meta.carbonado_path.clone(),
+      height,
+      tail.attestation_txid.unwrap_or_default(),
+      0,
+    );
+    let mut breccia = BrecciaLog::new(data_dir).open_or_create()?;
+    breccia.ensure_v2_header()?;
+    breccia.append_blob(&encode_entry_v2(&entry))?;
+    imported += 1;
+  }
+  Ok(imported)
 }
 
 fn parse_bao_root(hex_str: &str) -> Result<[u8; 32]> {
@@ -1987,6 +2237,390 @@ mod tests {
       "mismatches={:?}",
       result.cross_store.mismatches
     );
+  }
+
+  fn stage_inbound_tail(
+    data_dir: &Path,
+    bao_root: [u8; 32],
+    order_key: Vec<u8>,
+    attestation_height: Option<u32>,
+  ) {
+    use lord_ltp::{
+      BrecciaTailPayload, LtpChain, LtpFrame, LtpMessageType, append_inbound_tail, chain_profile,
+      commitment_digest,
+    };
+    let tail = BrecciaTailPayload {
+      bao_root,
+      start_digest: commitment_digest(&bao_root),
+      ots_order_key: order_key,
+      attestation_height,
+      attestation_txid: Some("ab".repeat(32)),
+      tree_root: None,
+    };
+    let profile = chain_profile(LtpChain::Regtest);
+    let frame = LtpFrame::new(
+      profile.chain_id,
+      LtpMessageType::BrecciaTail,
+      serde_json::to_vec(&tail).expect("payload"),
+    );
+    append_inbound_tail(data_dir, frame, tail, 42).expect("stage");
+  }
+
+  #[test]
+  fn import_inbound_tails_appends_v2_for_valid_staged_tail() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("payload.txt");
+    std::fs::write(&path, b"import valid").expect("write");
+    let store = StorageStore::open(dir.path()).expect("open");
+    let encoded = encode_file_with_store(
+      &store,
+      dir.path(),
+      &path,
+      EncodeOptions {
+        format: 12,
+        layout: Layout::Inboard,
+        master_key_hex: None,
+        ..Default::default()
+      },
+    )
+    .expect("encode");
+    drop(store);
+    let result = timestamp_commitment(
+      dir.path(),
+      &encoded.bao_root,
+      TimestampOptions {
+        dry_run: true,
+        ..Default::default()
+      },
+    )
+    .expect("timestamp");
+    let bao_root: [u8; 32] = hex::decode(&encoded.bao_root)
+      .expect("hex")
+      .try_into()
+      .expect("root");
+    let order_key = hex::decode(&result.ots_order_key).expect("order key");
+    stage_inbound_tail(dir.path(), bao_root, order_key, Some(100));
+    let imported = import_inbound_tails(dir.path()).expect("import");
+    assert_eq!(imported, 1);
+    let records = read_breccia_records(dir.path()).expect("breccia");
+    assert!(records.iter().any(|record| matches!(
+      record,
+      BrecciaRecord::V2(entry) if entry.bao_root == bao_root && entry.attestation_height == 100
+    )));
+    let imported_again = import_inbound_tails(dir.path()).expect("reimport");
+    assert_eq!(imported_again, 0);
+  }
+
+  #[test]
+  fn import_inbound_tails_rejects_foreign_and_invalid_tails() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    stage_inbound_tail(dir.path(), [99u8; 32], vec![0x01], Some(1));
+    use lord_ltp::{
+      BrecciaTailPayload, LtpChain, LtpFrame, LtpMessageType, append_inbound_tail, chain_profile,
+    };
+    let bad_tail = BrecciaTailPayload {
+      bao_root: [88u8; 32],
+      start_digest: [0u8; 32],
+      ots_order_key: vec![0x02],
+      attestation_height: Some(2),
+      attestation_txid: None,
+      tree_root: None,
+    };
+    let profile = chain_profile(LtpChain::Regtest);
+    let frame = LtpFrame::new(
+      profile.chain_id,
+      LtpMessageType::BrecciaTail,
+      serde_json::to_vec(&bad_tail).expect("payload"),
+    );
+    append_inbound_tail(dir.path(), frame, bad_tail, 1).expect("stage bad");
+    let imported = import_inbound_tails(dir.path()).expect("import");
+    assert_eq!(imported, 0);
+  }
+
+  #[test]
+  fn import_inbound_tails_requires_attestation_height() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("payload.txt");
+    std::fs::write(&path, b"no height").expect("write");
+    let store = StorageStore::open(dir.path()).expect("open");
+    let encoded = encode_file_with_store(
+      &store,
+      dir.path(),
+      &path,
+      EncodeOptions {
+        format: 12,
+        layout: Layout::Inboard,
+        master_key_hex: None,
+        ..Default::default()
+      },
+    )
+    .expect("encode");
+    drop(store);
+    let result = timestamp_commitment(
+      dir.path(),
+      &encoded.bao_root,
+      TimestampOptions {
+        dry_run: true,
+        ..Default::default()
+      },
+    )
+    .expect("timestamp");
+    let bao_root: [u8; 32] = hex::decode(&encoded.bao_root)
+      .expect("hex")
+      .try_into()
+      .expect("root");
+    let order_key = hex::decode(&result.ots_order_key).expect("order key");
+    stage_inbound_tail(dir.path(), bao_root, order_key, None);
+    let imported = import_inbound_tails(dir.path()).expect("import");
+    assert_eq!(imported, 0);
+  }
+
+  #[test]
+  fn upgrade_appends_breccia_v2_and_enqueues_ltp_after_mockcore_anchor() {
+    use bitcoin::Network;
+    use bitcoincore_rpc::{Auth, Client};
+    use lord_calendar::{AnchorConfig, CalendarConfig, CalendarService};
+    use lord_ltp::{LtpChain, LtpMempool, LtpQueueKind};
+
+    let core = mockcore::builder().network(Network::Regtest).build();
+    core.mine_blocks(1);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let calendar = std::sync::Arc::new(
+      CalendarService::open_chain_scoped(
+        dir.path(),
+        CalendarConfig::new(Chain::Regtest, Some("http://127.0.0.1:14788".into())),
+      )
+      .expect("calendar"),
+    );
+    let path = dir.path().join("payload.txt");
+    std::fs::write(&path, b"upgrade v2").expect("write");
+    let store = StorageStore::open(dir.path()).expect("open");
+    let encoded = encode_file_with_store(
+      &store,
+      dir.path(),
+      &path,
+      EncodeOptions {
+        format: 12,
+        layout: Layout::Inboard,
+        master_key_hex: None,
+        ..Default::default()
+      },
+    )
+    .expect("encode");
+    drop(store);
+    timestamp_commitment(
+      dir.path(),
+      &encoded.bao_root,
+      TimestampOptions {
+        dry_run: true,
+        ..Default::default()
+      },
+    )
+    .expect("timestamp");
+    let bao_root: [u8; 32] = hex::decode(&encoded.bao_root)
+      .expect("hex")
+      .try_into()
+      .expect("root");
+    let digest: [u8; 32] = commitment_digest(&bao_root).try_into().expect("digest");
+    calendar.submit_digest(&digest).expect("submit");
+    let inner = calendar.inner();
+    let client = Client::new(&core.url(), Auth::None).expect("rpc");
+    let config = AnchorConfig::regtest_defaults();
+    let mut last_tx = std::time::UNIX_EPOCH;
+    lord_calendar::anchor_once(&inner, &client, Network::Regtest, &config, &mut last_tx)
+      .expect("broadcast");
+    core.mine_blocks(1);
+    lord_calendar::anchor_once(&inner, &client, Network::Regtest, &config, &mut last_tx)
+      .expect("finalize");
+    upgrade_commitment(
+      dir.path(),
+      &encoded.bao_root,
+      UpgradeOptions {
+        calendar: Some(calendar),
+        ..Default::default()
+      },
+    )
+    .expect("upgrade");
+    let records = read_breccia_records(dir.path()).expect("breccia");
+    assert!(records.iter().any(|record| matches!(
+      record,
+      BrecciaRecord::V2(entry) if entry.bao_root == bao_root
+    )));
+    let mempool = LtpMempool::open(dir.path(), LtpChain::Regtest).expect("mempool");
+    assert_eq!(mempool.len(LtpQueueKind::Commitment), 1);
+  }
+
+  #[test]
+  fn verify_full_v1_only_dry_run_passes_attestation_matrix() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("payload.txt");
+    std::fs::write(&path, b"v1 matrix").expect("write");
+    let store = StorageStore::open(dir.path()).expect("open");
+    let encoded = encode_file_with_store(
+      &store,
+      dir.path(),
+      &path,
+      EncodeOptions {
+        format: 12,
+        layout: Layout::Inboard,
+        master_key_hex: None,
+        ..Default::default()
+      },
+    )
+    .expect("encode");
+    drop(store);
+    timestamp_commitment(
+      dir.path(),
+      &encoded.bao_root,
+      TimestampOptions {
+        dry_run: true,
+        ..Default::default()
+      },
+    )
+    .expect("timestamp");
+    let result = verify_commitment_full(dir.path(), &encoded.bao_root, None).expect("full");
+    assert!(result.cross_store.breccia_attestation_height_valid);
+    assert!(!result.cross_store.breccia_v2_found);
+  }
+
+  #[test]
+  fn verify_full_confirmed_attestation_without_v2_fails() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("payload.txt");
+    std::fs::write(&path, b"confirmed no v2").expect("write");
+    let store = StorageStore::open(dir.path()).expect("open");
+    let encoded = encode_file_with_store(
+      &store,
+      dir.path(),
+      &path,
+      EncodeOptions {
+        format: 12,
+        layout: Layout::Inboard,
+        master_key_hex: None,
+        ..Default::default()
+      },
+    )
+    .expect("encode");
+    let bao_root: [u8; 32] = hex::decode(&encoded.bao_root)
+      .expect("hex")
+      .try_into()
+      .expect("root");
+    drop(store);
+    timestamp_commitment(
+      dir.path(),
+      &encoded.bao_root,
+      TimestampOptions {
+        dry_run: true,
+        ..Default::default()
+      },
+    )
+    .expect("timestamp");
+    let digest = commitment_digest(&bao_root);
+    let merkle: [u8; 32] = digest.as_slice().try_into().expect("digest bytes");
+    let file = DetachedTimestampFile {
+      digest_type: DigestType::Sha256,
+      timestamp: Timestamp {
+        start_digest: digest.clone(),
+        first_step: Step {
+          data: StepData::Attestation(Attestation::Bitcoin { height: 7 }),
+          output: merkle.to_vec(),
+          next: vec![],
+        },
+      },
+    };
+    let mut proof_bytes = Vec::new();
+    file.to_writer(&mut proof_bytes).expect("serialize");
+    let ots_path = dir
+      .path()
+      .join("ots")
+      .join(format!("{}.ots", encoded.bao_root));
+    std::fs::write(&ots_path, proof_bytes).expect("write proof");
+    let result = verify_commitment_full(dir.path(), &encoded.bao_root, None).expect("full");
+    assert!(!result.cross_store.breccia_attestation_height_valid);
+    assert!(!result.cross_store.breccia_v2_found);
+    assert!(
+      result
+        .cross_store
+        .mismatches
+        .iter()
+        .any(|msg| msg.contains("breccia v2 entry missing"))
+    );
+  }
+
+  #[test]
+  fn verify_full_v2_with_matching_attestation_passes() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("payload.txt");
+    std::fs::write(&path, b"v2 match").expect("write");
+    let store = StorageStore::open(dir.path()).expect("open");
+    let encoded = encode_file_with_store(
+      &store,
+      dir.path(),
+      &path,
+      EncodeOptions {
+        format: 12,
+        layout: Layout::Inboard,
+        master_key_hex: None,
+        ..Default::default()
+      },
+    )
+    .expect("encode");
+    let bao_root: [u8; 32] = hex::decode(&encoded.bao_root)
+      .expect("hex")
+      .try_into()
+      .expect("root");
+    let digest = commitment_digest(&bao_root);
+    let merkle: [u8; 32] = digest.as_slice().try_into().expect("digest bytes");
+    let file = DetachedTimestampFile {
+      digest_type: DigestType::Sha256,
+      timestamp: Timestamp {
+        start_digest: digest.clone(),
+        first_step: Step {
+          data: StepData::Attestation(Attestation::Bitcoin { height: 12 }),
+          output: merkle.to_vec(),
+          next: vec![],
+        },
+      },
+    };
+    let mut proof_bytes = Vec::new();
+    file.to_writer(&mut proof_bytes).expect("serialize");
+    let order_key = order_key_from_proof_bytes(&proof_bytes).expect("order key");
+    let ots_path = dir
+      .path()
+      .join("ots")
+      .join(format!("{}.ots", encoded.bao_root));
+    std::fs::create_dir_all(ots_path.parent().unwrap()).expect("mkdir");
+    std::fs::write(&ots_path, proof_bytes).expect("write proof");
+    let mut wtxn = store.begin_write().expect("write");
+    let mut meta = store
+      .get_commitment(&wtxn, &bao_root)
+      .expect("get")
+      .expect("meta");
+    meta.ots_proof_path = Some(format!("ots/{}.ots", encoded.bao_root));
+    meta.ots_order_key = Some(order_key.as_bytes().to_vec());
+    meta.timestamped_at = Some(1);
+    store.put_commitment(&mut wtxn, &meta).expect("put");
+    wtxn.commit().expect("commit");
+    drop(store);
+    let mut breccia = BrecciaLog::new(dir.path())
+      .open_or_create()
+      .expect("breccia");
+    breccia.ensure_v2_header().expect("header");
+    let entry = CommitmentEntryV2::new(
+      bao_root,
+      order_key.as_bytes().to_vec(),
+      1,
+      meta.carbonado_path.clone(),
+      12,
+      String::new(),
+      0,
+    );
+    breccia
+      .append_blob(&encode_entry_v2(&entry))
+      .expect("append v2");
+    let result = verify_commitment_full(dir.path(), &encoded.bao_root, None).expect("full");
+    assert!(result.cross_store.breccia_v2_found);
+    assert!(result.cross_store.breccia_attestation_height_valid);
   }
 
   #[test]

@@ -28,6 +28,8 @@ pub struct CalendarStore {
   pub batches: BTreeMap<String, Vec<[u8; 32]>>,
   pub pending_anchor: Option<PendingAnchor>,
   pub last_anchor: Option<AnchorRecord>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub last_anchor_skipped_reason: Option<String>,
 }
 
 impl CalendarStore {

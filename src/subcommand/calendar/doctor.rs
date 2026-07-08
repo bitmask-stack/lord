@@ -22,6 +22,7 @@ pub(crate) struct CalendarDoctorResult {
   pub wallet_error: Option<String>,
   pub last_anchor_txid: Option<String>,
   pub pending_digests: Option<usize>,
+  pub last_anchor_skipped_reason: Option<String>,
 }
 
 impl Doctor {
@@ -48,6 +49,9 @@ impl Doctor {
       wallet_error: embedded.as_ref().and_then(|s| s.wallet_error.clone()),
       last_anchor_txid: embedded.as_ref().and_then(|s| s.last_anchor_txid.clone()),
       pending_digests: embedded.as_ref().map(|s| s.pending_digests),
+      last_anchor_skipped_reason: embedded
+        .as_ref()
+        .and_then(|s| s.last_anchor_skipped_reason.clone()),
     })))
   }
 }
@@ -58,6 +62,7 @@ struct EmbeddedStatus {
   wallet_error: Option<String>,
   last_anchor_txid: Option<String>,
   pending_digests: usize,
+  last_anchor_skipped_reason: Option<String>,
 }
 
 fn embedded_status(settings: &Settings) -> Option<EmbeddedStatus> {
@@ -81,6 +86,7 @@ fn embedded_status(settings: &Settings) -> Option<EmbeddedStatus> {
     wallet_error: status.wallet_error,
     last_anchor_txid: status.last_anchor.map(|a| a.txid),
     pending_digests: status.pending_digests,
+    last_anchor_skipped_reason: status.last_anchor_skipped_reason,
   })
 }
 

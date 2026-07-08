@@ -148,6 +148,10 @@ pub struct CommitmentInfo {
   pub timestamped: bool,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub ots_attestation: Option<lord_commit::AttestationVerifyStatusJson>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub attestation_height: Option<u32>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub attestation_txid: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]

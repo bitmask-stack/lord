@@ -1,8 +1,7 @@
 use super::super::*;
 
 use lord_calendar::{
-  CalendarConfig, CalendarService, anchor_config_for_chain, save_active_uri, spawn_anchor_worker,
-  spawn_http,
+  CalendarConfig, CalendarService, save_active_uri, spawn_anchor_worker, spawn_http,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -49,7 +48,7 @@ impl Serve {
         rpc_url,
         auth,
         network,
-        anchor_config_for_chain(settings.calendar_chain()),
+        settings.anchor_config(),
       );
       let http = spawn_http((*service).clone(), listen);
       log::info!("embedded calendar serving on http://{listen}");

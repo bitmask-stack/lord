@@ -24,6 +24,10 @@ Lord stores the cardinal block index as a heed3 LMDB environment per chain:
   ots/                     # detached OpenTimestamps proofs ({bao_root_hex}.ots)
   breccia/                 # append-only global commitment log
     global.breccia
+  ltp/                     # Lord Transport Protocol (Phase B)
+    mempool.json
+    inbound_tails.jsonl
+    iroh.key
   calendar/                # embedded OpenTimestamps calendar state
     state.json
   {chain}/                 # signet, regtest, testnet3, testnet4
@@ -338,6 +342,67 @@ cargo clippy -p lord -p lord-db -p lord-storage -- -D warnings
 just forbid
 just ci
 ```
+
+Phase B (Track B): LTP mempool, Iroh transport, breccia v2
+----------------------------------------------------------
+
+### Crates
+
+| Crate | Role |
+|-------|------|
+| `lord-ltp` | `LtpFrame`, local mempool (`ltp/mempool.json`), inbound staging |
+| `lord-iroh` | Iroh gossip for `BrecciaTail` frames; identity at `ltp/iroh.key` |
+
+### CLI
+
+```text
+lord ltp status
+lord ltp enqueue <bao_root> [--queue commitment|storage|market] [--priority N]
+lord ltp import
+lord p2p serve [--bootstrap-peer ENDPOINT_ID]...
+lord p2p doctor
+lord p2p peers
+```
+
+`lord commit upgrade` appends breccia **v2** entries (post-mine attestation metadata)
+and enqueues an LTP commitment-mempool entry. v1 breccia blobs are never rewritten.
+
+### Breccia v2 blob
+
+Tagged blob format: `LBV2` magic + bincode `CommitmentEntryV2`. Fields:
+
+| Field | Type |
+|-------|------|
+| `bao_root` | `[u8; 32]` |
+| `ots_order_key` | `Vec<u8>` |
+| `timestamped_at` | `u64` |
+| `carbonado_path` | `String` |
+| `attestation_height` | `u32` |
+| `attestation_txid` | `String` |
+| `replication_target` | `u32` (stub, default 0) |
+
+File header may be bumped to `LORBRECC` version **2** on first v2 append; v1 readers
+accept both header versions and per-blob v1/v2 records.
+
+### Calendar fee config (`lord.yaml`)
+
+| Key | Type | Behavior |
+|-----|------|----------|
+| `calendar_max_anchor_fee_sats` | `u64` | Skip anchor when estimated fee exceeds cap |
+| `calendar_min_wallet_balance_sats` | `u64` | Skip anchor when wallet balance is below minimum |
+| `calendar_ltp_priority` | `bool` | Prefer LTP commitment-queue digests when draining calendar batch (max 64) |
+
+`lord calendar doctor` reports `last_anchor_skipped_reason` when the anchor worker
+skipped a tick due to fee/balance policy.
+
+### Planned schema IDs (Track C stub only)
+
+| Namespace | ID | Notes |
+|-----------|-----|-------|
+| LTP frame | `1` | Phase B JSON payloads |
+| LTP mempool file | unversioned JSON | queue arrays keyed by kind |
+| Breccia file header | `1` / `2` | v2 header after first v2 append |
+| Breccia blob | `v1` untagged / `v2` magic `LBV2` | per-entry versioning |
 
 PR3 (complete): commitment, OTS ordering, breccia
 ------------------------------------------------

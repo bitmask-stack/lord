@@ -31,6 +31,11 @@ pub struct AnchorConfig {
   pub batch_max: usize,
   pub wallet_name: Option<String>,
   pub pending_anchor_timeout: Duration,
+  pub max_anchor_fee_sats: Option<u64>,
+  pub min_wallet_balance_sats: Option<u64>,
+  pub ltp_priority: bool,
+  #[cfg(test)]
+  pub block_broadcast: bool,
 }
 
 impl AnchorConfig {
@@ -41,6 +46,11 @@ impl AnchorConfig {
       batch_max: 64,
       wallet_name: None,
       pending_anchor_timeout: Duration::from_secs(60),
+      max_anchor_fee_sats: None,
+      min_wallet_balance_sats: None,
+      ltp_priority: false,
+      #[cfg(test)]
+      block_broadcast: false,
     }
   }
 }
@@ -61,6 +71,7 @@ pub struct AnchorStatus {
   pub pending_digests: usize,
   pub wallet_balance_sats: Option<u64>,
   pub wallet_error: Option<String>,
+  pub last_anchor_skipped_reason: Option<String>,
 }
 
 pub fn spawn_anchor_worker(
@@ -121,14 +132,67 @@ pub fn anchor_once(
     bail!("named calendar wallets are not supported yet");
   }
   let anchor_fee_sats = anchor_fee_sats(client, network)?;
+  if let Some(max_fee) = config.max_anchor_fee_sats
+    && anchor_fee_sats > max_fee
+  {
+    record_anchor_skipped(
+      inner,
+      format!("anchor fee {anchor_fee_sats} sats exceeds cap {max_fee} sats"),
+    )?;
+    return Ok(());
+  }
+  if let Some(min_balance) = config.min_wallet_balance_sats {
+    match wallet_balance_sats(client) {
+      Ok(balance) if balance < min_balance => {
+        record_anchor_skipped(
+          inner,
+          format!("wallet balance {balance} sats below minimum {min_balance} sats"),
+        )?;
+        return Ok(());
+      }
+      Err(err) => {
+        record_anchor_skipped(inner, format!("wallet balance check failed: {err}"))?;
+        return Ok(());
+      }
+      _ => {}
+    }
+  }
   ensure_wallet_funded(client, network, anchor_fee_sats)?;
 
-  let (batch, merkle_root, calendar_dir) = {
+  let (batch, merkle_root, calendar_dir, ltp_mempool_digests) = {
     let mut guard = inner.write();
     if guard.store.pending_anchor.is_some() || guard.queue.pending.is_empty() {
       return Ok(());
     }
-    let batch = guard.queue.drain_batch(config.batch_max);
+    let chain_data_dir = guard
+      .calendar_dir
+      .parent()
+      .context("calendar dir must have parent")?
+      .to_path_buf();
+    let chain = lord_ltp::LtpChain::from_chain_scoped_data_dir(&chain_data_dir);
+    let mut ltp_mempool_digests = Vec::new();
+    let batch = if config.ltp_priority {
+      match lord_ltp::LtpMempool::open(&chain_data_dir, chain) {
+        Ok(mempool) => {
+          let priority = mempool.commitment_start_digests();
+          let batch = guard
+            .queue
+            .drain_batch_prioritized(&priority, config.batch_max);
+          ltp_mempool_digests = batch
+            .iter()
+            .filter(|digest| priority.contains(digest))
+            .copied()
+            .collect();
+          batch
+        }
+        Err(err) => {
+          log::warn!("ltp mempool unavailable, falling back to FIFO drain: {err:#}");
+          guard.queue.drain_batch(config.batch_max)
+        }
+      }
+    } else {
+      guard.queue.drain_batch(config.batch_max)
+    };
     if batch.is_empty() {
       return Ok(());
     }
@@ -139,7 +203,12 @@ pub fn anchor_once(
       .batches
       .insert(hex::encode(&merkle_root), batch.clone());
     save_state(&guard.calendar_dir, &guard.queue, &guard.store)?;
-    (batch, merkle_root, guard.calendar_dir.clone())
+    (
+      batch,
+      merkle_root,
+      guard.calendar_dir.clone(),
+      (chain_data_dir, chain, ltp_mempool_digests),
+    )
   };
 
   let broadcast = (|| -> Result<String> {
@@ -209,6 +278,11 @@ pub fn anchor_once(
       bail!("signed anchor transaction is missing OP_RETURN output");
     }
 
+    #[cfg(test)]
+    if config.block_broadcast {
+      bail!("test blocked anchor broadcast");
+    }
+
     client
       .send_raw_transaction(&tx)
       .context("sendrawtransaction failed")
@@ -222,6 +296,15 @@ pub fn anchor_once(
       return Err(err);
     }
   };
+
+  let (chain_data_dir, chain, ltp_mempool_digests) = ltp_mempool_digests;
+  if !ltp_mempool_digests.is_empty()
+    && let Ok(mut mempool) = lord_ltp::LtpMempool::open(&chain_data_dir, chain)
+  {
+    for digest in &ltp_mempool_digests {
+      let _ = mempool.remove_start_digest(lord_ltp::LtpQueueKind::Commitment, *digest);
+    }
+  }
 
   *last_tx = now;
 
@@ -332,6 +415,7 @@ fn finalize_anchor(
     merkle_root: pending.merkle_root.clone(),
     anchored_at,
   });
+  guard.store.last_anchor_skipped_reason = None;
   guard.store.pending_anchor = None;
   save_state(&guard.calendar_dir, &guard.queue, &guard.store)?;
   Ok(())
@@ -411,10 +495,32 @@ fn ensure_wallet_funded(client: &Client, network: Network, anchor_fee_sats: u64)
   bail!("calendar wallet has no balance");
 }
 
+fn record_anchor_skipped(inner: &Arc<RwLock<CalendarInner>>, reason: String) -> Result<()> {
+  let mut guard = inner.write();
+  guard.store.last_anchor_skipped_reason = Some(reason);
+  save_state(&guard.calendar_dir, &guard.queue, &guard.store)?;
+  Ok(())
+}
+
+fn wallet_balance_sats(client: &Client) -> Result<u64> {
+  Ok(
+    client
+      .list_unspent(None, None, None, None, None)
+      .context("listunspent failed")?
+      .iter()
+      .map(|entry| entry.amount.to_sat())
+      .sum(),
+  )
+}
+
 pub fn probe_status(inner: &Arc<RwLock<CalendarInner>>, client: Option<&Client>) -> AnchorStatus {
-  let (last_anchor, pending_digests) = {
+  let (last_anchor, pending_digests, last_anchor_skipped_reason) = {
     let guard = inner.read();
-    (guard.store.last_anchor.clone(), guard.queue.pending.len())
+    (
+      guard.store.last_anchor.clone(),
+      guard.queue.pending.len(),
+      guard.store.last_anchor_skipped_reason.clone(),
+    )
   };
   let (wallet_balance_sats, wallet_error) = match client {
     Some(client) => match client.list_unspent(None, None, None, None, None) {
@@ -431,6 +537,7 @@ pub fn probe_status(inner: &Arc<RwLock<CalendarInner>>, client: Option<&Client>)
     pending_digests,
     wallet_balance_sats,
     wallet_error,
+    last_anchor_skipped_reason,
   }
 }
 
@@ -511,6 +618,148 @@ mod tests {
       ),
       "expected confirmed attestation, got {status:?}"
     );
+  }
+
+  #[test]
+  fn anchor_skips_when_balance_below_minimum() {
+    let core = mockcore::builder().network(Network::Regtest).build();
+    core.mine_blocks(1);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let service = CalendarService::open_chain_scoped(
+      dir.path(),
+      CalendarConfig::new(crate::chain::Chain::Regtest, None),
+    )
+    .expect("open");
+    let digest = [6u8; 32];
+    service.submit_digest(&digest).expect("submit");
+    let inner = service.inner();
+    let client = Client::new(&core.url(), Auth::None).expect("rpc");
+    let mut config = AnchorConfig::regtest_defaults();
+    config.min_wallet_balance_sats = Some(u64::MAX);
+    let mut last_tx = UNIX_EPOCH;
+    anchor_once(&inner, &client, Network::Regtest, &config, &mut last_tx).expect("skip");
+    assert_eq!(service.pending_count(), 1);
+    let skipped_reason = inner.read().store.last_anchor_skipped_reason.clone();
+    let reason = skipped_reason.as_deref().expect("skipped reason");
+    assert!(reason.contains("wallet balance"));
+    assert!(reason.contains("below minimum"));
+    let status = probe_status(&inner, Some(&client));
+    assert_eq!(status.last_anchor_skipped_reason.as_deref(), Some(reason));
+  }
+
+  #[test]
+  fn anchor_skips_when_fee_exceeds_cap() {
+    let core = mockcore::builder().network(Network::Regtest).build();
+    core.mine_blocks(1);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let service = CalendarService::open_chain_scoped(
+      dir.path(),
+      CalendarConfig::new(crate::chain::Chain::Regtest, None),
+    )
+    .expect("open");
+    let digest = [5u8; 32];
+    service.submit_digest(&digest).expect("submit");
+    let inner = service.inner();
+    let client = Client::new(&core.url(), Auth::None).expect("rpc");
+    let mut config = AnchorConfig::regtest_defaults();
+    config.max_anchor_fee_sats = Some(1);
+    let mut last_tx = UNIX_EPOCH;
+    anchor_once(&inner, &client, Network::Regtest, &config, &mut last_tx).expect("skip");
+    assert_eq!(service.pending_count(), 1);
+    assert_eq!(
+      inner.read().store.last_anchor_skipped_reason.as_deref(),
+      Some("anchor fee 1000 sats exceeds cap 1 sats")
+    );
+    let status = probe_status(&inner, Some(&client));
+    assert_eq!(
+      status.last_anchor_skipped_reason.as_deref(),
+      Some("anchor fee 1000 sats exceeds cap 1 sats")
+    );
+  }
+
+  #[test]
+  fn anchor_ltp_priority_empty_mempool_drains_fifo() {
+    let core = mockcore::builder().network(Network::Regtest).build();
+    core.mine_blocks(1);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let service = CalendarService::open_chain_scoped(
+      dir.path(),
+      CalendarConfig::new(crate::chain::Chain::Regtest, None),
+    )
+    .expect("open");
+    let digest = [9u8; 32];
+    service.submit_digest(&digest).expect("submit");
+    let inner = service.inner();
+    let client = Client::new(&core.url(), Auth::None).expect("rpc");
+    let mut config = AnchorConfig::regtest_defaults();
+    config.ltp_priority = true;
+    let mut last_tx = UNIX_EPOCH;
+    anchor_once(&inner, &client, Network::Regtest, &config, &mut last_tx).expect("broadcast");
+    assert_eq!(service.pending_count(), 0);
+    assert!(inner.read().store.pending_anchor.is_some());
+  }
+
+  #[test]
+  fn anchor_ltp_priority_corrupt_mempool_falls_back_to_fifo() {
+    let core = mockcore::builder().network(Network::Regtest).build();
+    core.mine_blocks(1);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let service = CalendarService::open_chain_scoped(
+      dir.path(),
+      CalendarConfig::new(crate::chain::Chain::Regtest, None),
+    )
+    .expect("open");
+    let digest = [10u8; 32];
+    service.submit_digest(&digest).expect("submit");
+    let mempool_path = dir.path().join("regtest/ltp/mempool.json");
+    std::fs::create_dir_all(mempool_path.parent().unwrap()).expect("mkdir");
+    std::fs::write(&mempool_path, b"{not json").expect("corrupt");
+    let inner = service.inner();
+    let client = Client::new(&core.url(), Auth::None).expect("rpc");
+    let mut config = AnchorConfig::regtest_defaults();
+    config.ltp_priority = true;
+    let mut last_tx = UNIX_EPOCH;
+    anchor_once(&inner, &client, Network::Regtest, &config, &mut last_tx).expect("broadcast");
+    assert_eq!(service.pending_count(), 0);
+  }
+
+  #[test]
+  fn anchor_ltp_priority_preserves_mempool_when_broadcast_fails() {
+    let core = mockcore::builder().network(Network::Regtest).build();
+    core.mine_blocks(1);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let service = CalendarService::open_chain_scoped(
+      dir.path(),
+      CalendarConfig::new(crate::chain::Chain::Regtest, None),
+    )
+    .expect("open");
+    let digest = lord_ltp::commitment_digest(&[11u8; 32]);
+    service.submit_digest(&digest).expect("submit");
+    let mut mempool =
+      lord_ltp::LtpMempool::open(dir.path().join("regtest"), lord_ltp::LtpChain::Regtest)
+        .expect("mempool");
+    mempool
+      .enqueue(lord_ltp::LtpMempoolEntry {
+        bao_root: [11u8; 32],
+        start_digest: digest,
+        enqueued_at: 1,
+        priority: 0,
+        queue: lord_ltp::LtpQueueKind::Commitment,
+      })
+      .expect("enqueue");
+    let inner = service.inner();
+    let client = Client::new(&core.url(), Auth::None).expect("rpc");
+    let mut config = AnchorConfig::regtest_defaults();
+    config.ltp_priority = true;
+    let mut last_tx = UNIX_EPOCH;
+    config.block_broadcast = true;
+    let err = anchor_once(&inner, &client, Network::Regtest, &config, &mut last_tx).unwrap_err();
+    assert!(err.to_string().contains("test blocked anchor broadcast"));
+    assert_eq!(service.pending_count(), 1);
+    let mempool =
+      lord_ltp::LtpMempool::open(dir.path().join("regtest"), lord_ltp::LtpChain::Regtest)
+        .expect("reload");
+    assert_eq!(mempool.len(lord_ltp::LtpQueueKind::Commitment), 1);
   }
 
   #[test]

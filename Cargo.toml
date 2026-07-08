@@ -82,6 +82,8 @@ miniscript = "13.0.0"
 mp4 = "0.14.0"
 lord-calendar = { path = "crates/lord-calendar" }
 lord-commit = { path = "crates/lord-commit" }
+lord-iroh = { path = "crates/lord-iroh" }
+lord-ltp = { path = "crates/lord-ltp" }
 lord-db = { path = "crates/lord-db" }
 lord-storage = { path = "crates/lord-storage" }
 ordinals = { version = "0.0.15", path = "crates/ordinals", default-features = false }
@@ -104,7 +106,7 @@ sha3 = "0.10.8"
 snafu = "0.9.0"
 sysinfo = "0.38.0"
 tempfile.workspace = true
-tokio = { version = "1.43.0", features = ["rt-multi-thread"] }
+tokio = { version = "1.43.0", features = ["rt-multi-thread", "signal"] }
 tokio-stream = "0.1.9"
 tokio-util = {version = "0.7.3", features = ["compat"] }
 tower-http = { version = "0.6.2", features = ["auth", "compression-br", "compression-gzip", "cors", "set-header"] }

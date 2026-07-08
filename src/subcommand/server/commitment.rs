@@ -30,6 +30,14 @@ pub(super) async fn commitment_detail(
       .get_commitment(&rtxn, &root_bytes)?
       .ok_or_not_found(|| format!("commitment {bao_root}"))?;
     let timestamped = meta.is_timestamped();
+    let breccia_v2 = lord_commit::read_breccia_records(settings.data_dir())
+      .ok()
+      .and_then(|records| {
+        records.into_iter().find_map(|record| match record {
+          lord_commit::BrecciaRecord::V2(entry) if entry.bao_root == root_bytes => Some(entry),
+          _ => None,
+        })
+      });
     let ots_attestation = if timestamped {
       Some(ots_attestation_for_commitment(
         &settings,
@@ -58,6 +66,11 @@ pub(super) async fn commitment_detail(
           timestamped,
           timestamped_at: meta.timestamped_at,
           ots_attestation: ots_attestation.clone(),
+          attestation_height: breccia_v2.as_ref().map(|entry| entry.attestation_height),
+          attestation_txid: breccia_v2
+            .as_ref()
+            .map(|entry| entry.attestation_txid.clone())
+            .filter(|txid| !txid.is_empty()),
         })
         .into_response(),
       );
@@ -80,6 +93,11 @@ pub(super) async fn commitment_detail(
         timestamped_at: meta.timestamped_at,
         timestamped,
         ots_attestation,
+        attestation_height: breccia_v2.as_ref().map(|entry| entry.attestation_height),
+        attestation_txid: breccia_v2
+          .as_ref()
+          .map(|entry| entry.attestation_txid.clone())
+          .filter(|txid| !txid.is_empty()),
       }
       .page(server_config)
       .into_response(),

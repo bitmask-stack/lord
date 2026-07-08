@@ -60,8 +60,9 @@ Calendar anchors spend from bitcoind's loaded wallet (not Lord LMDB wallet):
 | Testnet3/4 | Faucets | Same anchor worker as mainnet |
 | Regtest | `generatetoaddress` | Dev only |
 
-Lord does not subsidize anchors; operators set `max_anchor_fee` in calendar config
-(TBD in PR5).
+Lord does not subsidize anchors. Phase B ships `calendar_max_anchor_fee_sats` and
+`calendar_min_wallet_balance_sats` in `lord.yaml`; when either policy blocks an
+anchor tick, `lord calendar doctor` reports `last_anchor_skipped_reason`.
 
 Chain profiles
 --------------
@@ -121,6 +122,61 @@ Shipped today (Phase A):
 - Embedded calendar, breccia append log, `/commitment/*` explorer
 
 LTP Phase B adds Iroh transport atop the same breccia tail and Bao roots.
+
+Phase B normative wire model
+----------------------------
+
+### `LtpFrame` envelope
+
+All LTP gossip frames use a versioned envelope:
+
+| Field | Type | Semantics |
+|-------|------|-----------|
+| `version` | `u8` | Frame schema version (currently **1**) |
+| `chain_id` | `u32` | Chain profile id (mainnet **0**, signet **1**, testnet **2**, regtest **3**) |
+| `message_type` | enum | See message types below |
+| `payload` | bytes | Type-specific JSON (Phase B) or CBOR (future) |
+
+### Message types (Phase B)
+
+| Type | Status | Purpose |
+|------|--------|---------|
+| `BrecciaTail` | **Normative** | Post-mine breccia head + OTS binding |
+| `OtsUpgradeHint` | **Normative** | Notify peers that a digest has an enriched calendar proof |
+| `ReplicationOffer` | **Stub** | Storage market offer (Track C) |
+| `BaoChallenge` | **Stub** | Sampled Bao possession challenge (Track C) |
+
+### `LtpMempoolEntry`
+
+Local mempool records (persisted at `{chain_data_dir}/ltp/mempool.json`):
+
+| Field | Type | Semantics |
+|-------|------|-----------|
+| `bao_root` | `[u8; 32]` | Carbonado commitment root |
+| `start_digest` | `[u8; 32]` | `SHA256(bao_root)` OTS start digest |
+| `enqueued_at` | `u64` | Unix seconds |
+| `priority` | `u32` | Higher sorts earlier when `calendar_ltp_priority` is enabled |
+
+### `TreeRoot`
+
+Calendar batch anchor metadata carried in `BrecciaTail` payloads:
+
+| Field | Type | Semantics |
+|-------|------|-----------|
+| `merkle_root` | `[u8; 32]` | OpenTimestamps merkle batch root |
+| `anchor_txid` | string | Bitcoin txid of the calendar anchor |
+
+### Mempool rules
+
+1. **Dedup** — within a queue, `enqueue` rejects duplicate `start_digest` values.
+2. **TTL** — `prune_expired` drops entries older than the chain profile TTL
+   (mainnet 24h, signet 1h, regtest 5m).
+3. **Max depth** — per-queue cap (mainnet 10_000; regtest 1_000). Enqueue fails
+   when full.
+
+Inbound gossip tails are staged at `{chain_data_dir}/ltp/inbound_tails.jsonl`
+without auto-merge; operators run `lord ltp import` to append breccia v2 entries
+idempotently.
 
 Migration
 ---------

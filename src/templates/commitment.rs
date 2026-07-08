@@ -13,6 +13,8 @@ pub(crate) struct CommitmentHtml {
   pub(crate) timestamped_at: Option<u64>,
   pub(crate) timestamped: bool,
   pub(crate) ots_attestation: Option<lord_commit::AttestationVerifyStatusJson>,
+  pub(crate) attestation_height: Option<u32>,
+  pub(crate) attestation_txid: Option<String>,
 }
 
 impl Display for CommitmentHtml {
@@ -46,6 +48,15 @@ impl Display for CommitmentHtml {
             confirmations,
           } => {
             writeln!(f, "<dt>attestation</dt><dd>confirmed</dd>")?;
+            if let Some(breccia_height) = self.attestation_height {
+              writeln!(
+                f,
+                "<dt>breccia attestation height</dt><dd>{breccia_height}</dd>"
+              )?;
+            }
+            if let Some(txid) = &self.attestation_txid {
+              writeln!(f, "<dt>breccia attestation txid</dt><dd>{txid}</dd>")?;
+            }
             writeln!(f, "<dt>block height</dt><dd>{height}</dd>")?;
             if let Some(confirmations) = confirmations {
               writeln!(f, "<dt>confirmations</dt><dd>{confirmations}</dd>")?;

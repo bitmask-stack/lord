@@ -21,17 +21,33 @@ deps-check:
 smoke:
   cargo test --test integration smoke:: -- --nocapture
 
+# Iroh loopback gossip (serial + wall timeout — avoids stacked endpoint zombies).
+p2p-smoke:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  timeout 120 cargo test -p lord-iroh --test loopback_gossip -- --nocapture --test-threads=1
+
+# Full test suite: integration smoke → p2p smoke → workspace `cargo test --all`.
+# One command to run everything: `just test`
 test-all:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "== 1/3 smoke (integration CLI) =="
+  just smoke
+  echo "== 2/3 p2p-smoke (Iroh loopback) =="
+  just p2p-smoke
+  echo "== 3/3 cargo test --all =="
   cargo test --all
 
-ci-local: deps-check smoke clippy forbid
+test: test-all
+
+ci-local: deps-check clippy forbid
   cargo fmt --all -- --check
   just test-all
 
-ci: smoke
-  clippy forbid
+ci: clippy forbid
   cargo fmt -- --check
-  cargo test --all
+  just test-all
   cargo test --all -- --ignored
 
 forbid:
