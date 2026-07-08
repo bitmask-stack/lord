@@ -9,8 +9,10 @@ use iroh_gossip::api::Event;
 use iroh_gossip::{Gossip, TopicId};
 use lord_ltp::LtpChain;
 use lord_ltp::{
-  BrecciaTailPayload, LtpFrame, LtpMessageType, chain_profile, validate_breccia_tail_payload,
-  validate_ltp_frame_version,
+  BaoChallengePayload, BrecciaTailPayload, LtpFrame, LtpMessageType, PaymentProofPayload,
+  chain_profile, decode_bao_challenge_frame, decode_payment_proof_frame,
+  validate_bao_challenge_payload, validate_breccia_tail_payload, validate_ltp_frame_version,
+  validate_payment_proof_payload,
 };
 use lord_storage::atomic_write;
 use n0_future::StreamExt;
@@ -18,7 +20,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
-use crate::inbound::{append_inbound_tail, decode_breccia_tail_frame};
+use crate::inbound::{
+  append_inbound_bao_challenge, append_inbound_payment_proof, append_inbound_tail,
+  decode_breccia_tail_frame,
+};
 use crate::topic::breccia_tail_topic;
 
 pub const LTP_GOSSIP_ALPN_TOPIC: &str = "lord-ltp-breccia-tail";
@@ -133,6 +138,56 @@ fn load_or_create_secret_key(path: &Path) -> Result<SecretKey> {
   Ok(key)
 }
 
+fn ensure_storage_contract_for_root(chain_data_dir: &Path, bao_root: &[u8; 32]) -> Result<()> {
+  if !lord_market::storage_contract_exists(chain_data_dir, bao_root)? {
+    bail!(
+      "no storage contract for bao root `{}`",
+      hex::encode(bao_root)
+    );
+  }
+  Ok(())
+}
+
+/// Publish a Bao challenge frame on the chain gossip topic.
+pub async fn publish_bao_challenge(node: &IrohNode, challenge: BaoChallengePayload) -> Result<()> {
+  validate_bao_challenge_payload(&challenge)?;
+  ensure_storage_contract_for_root(&node.chain_data_dir, &challenge.bao_root)?;
+  let profile = chain_profile(node.chain);
+  let payload = serde_json::to_vec(&challenge).context("failed to encode BaoChallenge payload")?;
+  let frame = LtpFrame::new(profile.chain_id, LtpMessageType::BaoChallenge, payload);
+  let bytes = serde_json::to_vec(&frame).context("failed to encode LtpFrame")?;
+  let mut topic = node
+    .gossip
+    .subscribe_and_join(node.topic, node.bootstrap_peers.clone())
+    .await
+    .context("failed to join gossip topic")?;
+  topic
+    .broadcast(Bytes::from(bytes))
+    .await
+    .context("failed to broadcast bao challenge")?;
+  Ok(())
+}
+
+/// Publish a payment proof frame on the chain gossip topic.
+pub async fn publish_payment_proof(node: &IrohNode, proof: PaymentProofPayload) -> Result<()> {
+  validate_payment_proof_payload(&proof)?;
+  ensure_storage_contract_for_root(&node.chain_data_dir, &proof.bao_root)?;
+  let profile = chain_profile(node.chain);
+  let payload = serde_json::to_vec(&proof).context("failed to encode PaymentProof payload")?;
+  let frame = LtpFrame::new(profile.chain_id, LtpMessageType::PaymentProof, payload);
+  let bytes = serde_json::to_vec(&frame).context("failed to encode LtpFrame")?;
+  let mut topic = node
+    .gossip
+    .subscribe_and_join(node.topic, node.bootstrap_peers.clone())
+    .await
+    .context("failed to join gossip topic")?;
+  topic
+    .broadcast(Bytes::from(bytes))
+    .await
+    .context("failed to broadcast payment proof")?;
+  Ok(())
+}
+
 /// Publish a breccia tail frame on the chain gossip topic.
 pub async fn publish_breccia_tail(node: &IrohNode, tail: BrecciaTailPayload) -> Result<()> {
   let profile = chain_profile(node.chain);
@@ -209,11 +264,29 @@ pub fn handle_inbound_message(
       frame.chain_id
     );
   }
-  let tail = decode_breccia_tail_frame(&frame)?;
-  validate_breccia_tail_payload(&tail)?;
   let received_at = SystemTime::now()
     .duration_since(UNIX_EPOCH)
     .context("system time before unix epoch")?
     .as_secs();
-  append_inbound_tail(chain_data_dir, frame, tail, received_at)
+
+  match frame.message_type {
+    LtpMessageType::BrecciaTail => {
+      let tail = decode_breccia_tail_frame(&frame)?;
+      validate_breccia_tail_payload(&tail)?;
+      append_inbound_tail(chain_data_dir, frame, tail, received_at)
+    }
+    LtpMessageType::PaymentProof => {
+      let proof = decode_payment_proof_frame(&frame)?;
+      validate_payment_proof_payload(&proof)?;
+      ensure_storage_contract_for_root(chain_data_dir, &proof.bao_root)?;
+      append_inbound_payment_proof(chain_data_dir, frame, proof, received_at)
+    }
+    LtpMessageType::BaoChallenge => {
+      let challenge = decode_bao_challenge_frame(&frame)?;
+      validate_bao_challenge_payload(&challenge)?;
+      ensure_storage_contract_for_root(chain_data_dir, &challenge.bao_root)?;
+      append_inbound_bao_challenge(chain_data_dir, frame, challenge, received_at)
+    }
+    other => bail!("unsupported inbound LtpMessageType: {other:?}"),
+  }
 }

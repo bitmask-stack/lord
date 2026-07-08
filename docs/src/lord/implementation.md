@@ -184,6 +184,8 @@ numbers (c0..c15).
 | Blobs | `{data_dir}/carbonado/{bao_root_hex}.c{NN}` | Carbonado v2 files |
 | Filepack | `{data_dir}/filepack/{fingerprint}/` | `manifest.filepack` (JSON legacy or Casey CBOR) + `lord.carbonado.cbor` sidecar in compat mode |
 | Commitment metadata | `{data_dir}/storage/` | heed3 LMDB env via `StorageStore` |
+| Storage market | `{data_dir}/market/` | heed3 LMDB env via `MarketStore` (`lord-market`) |
+| Lightning (feature `lightning`) | `{data_dir}/lightning/` | LDK node persistence (`lord-lightning`) |
 
 Mainnet uses `{data_dir}/carbonado` etc. at the data-dir root; other chains use
 `{data_dir}/{chain}/carbonado` (same pattern as index/wallet).
@@ -403,6 +405,391 @@ skipped a tick due to fee/balance policy.
 | LTP mempool file | unversioned JSON | queue arrays keyed by kind |
 | Breccia file header | `1` / `2` | v2 header after first v2 append |
 | Breccia blob | `v1` untagged / `v2` magic `LBV2` | per-entry versioning |
+
+Phase C1 (Track C): storage market contracts
+--------------------------------------------
+
+### Crate
+
+| Crate | Role |
+|-------|------|
+| `lord-market` | LMDB contracts, provider offers, replication state (`heed3` via `lord-db`) |
+
+Data directory: `{chain_data_dir}/market/` (LMDB env, `lord-db` schema version **1**).
+
+| Database | Key → Value |
+|----------|-------------|
+| `CONTRACT_BY_ROOT` | `bao_root [u8;32]` → `StorageContract` (rkyv) |
+| `OFFERS` | namespace prefix + offer id → `ProviderOffer` |
+| `REPLICATION_STATE` | `bao_root` → `ReplicationState` |
+
+Public and odd markets are separated by namespace prefix (`0` = public/even c-format,
+`1` = odd/private). `lord market request` requires a **timestamped** commitment in
+`{chain_data_dir}/storage/` and rejects visibility that does not match commitment
+c-format parity.
+
+### CLI
+
+```text
+lord market request <bao_root> --replication N --visibility public|odd [--mutual-aid-only]
+lord market offer --capacity-gib N [--encrypted-only] [--open-to-unencrypted]
+lord market status <bao_root>
+lord market challenge <bao_root> [--provider PEER] [--sample-rate N]
+```
+
+`lord market challenge` runs local Bao slice verification via `lord-storage`; the
+`--provider` peer is recorded but not contacted in C1.
+
+### Settings (`lord.yaml`)
+
+| Key | Type | Behavior |
+|-----|------|----------|
+| `mutual_aid_enabled` | `bool` | Required for `--mutual-aid-only` contract requests |
+| `encrypted_only_preference` | `bool` | Default offer namespace when CLI flags omitted |
+| `open_to_unencrypted` | `bool` | Willingness to store public (even c-format) data |
+
+### Exit criteria
+
+```bash
+cargo test -p lord-market
+just market-smoke
+cargo clippy -p lord-market -p lord -- -D warnings
+```
+
+Phase C2 (Track C): embedded Lightning node (LDK skeleton)
+----------------------------------------------------------
+
+### Crate
+
+| Crate | Role |
+|-------|------|
+| `lord-lightning` | LDK node builder, bitcoind RPC chain sync, status snapshot |
+
+Data directory: `{chain_data_dir}/lightning/` (LDK wallet/channel persistence).
+
+The `lord` binary exposes `lord lightning *` only when built with
+`--features lightning` (default **off** so CI stays fast).
+
+### CLI
+
+```text
+lord lightning serve [--listen ADDR]
+lord lightning status [--listen ADDR]
+```
+
+`serve` boots the embedded LDK node and runs until interrupted (Ctrl-C).
+`status` starts the node briefly, reports JSON status (node id, channel count,
+chain sync height/hash, wallet sync timestamps), then stops.
+
+Chain sync uses the same Bitcoin Core RPC settings as other lord subcommands
+(`bitcoin_rpc_url`, cookie file or username/password).
+
+### Market settlement hook (stub)
+
+`StorageContract` carries an optional `invoice_hash: Option<[u8; 32]>` placeholder
+for future BOLT11 settlement (CHIP payments annex). C2 does **not** implement
+payment flow:
+
+| API (`lord-market`) | Behavior |
+|---------------------|----------|
+| `create_invoice_for_contract()` | Returns `SettlementNotImplemented` |
+| `settle_storage_contract()` | Returns `SettlementNotImplemented` |
+
+### Settings (`lord.yaml`)
+
+| Key | Type | Behavior |
+|-----|------|----------|
+| `lightning_listen` | `string` | Default `127.0.0.1:9735`; used when `--listen` is omitted on `lord lightning serve` / `status` |
+
+Bitcoin RPC keys (`bitcoin_rpc_url`, `cookie_file`, etc.) are shared with the
+embedded calendar and wallet.
+
+### Exit criteria
+
+```bash
+cargo test -p lord-lightning
+just lightning-smoke
+cargo clippy -p lord-lightning -- -D warnings
+cargo test -p lord --features lightning --no-run
+```
+
+Phase C3 (Track C): ecash + payment traits
+-------------------------------------------
+
+> **Note:** Live settlement wiring shipped in **Phase C4** below. C3 stub
+> behavior remains when `ecash-lightning` is not compiled.
+
+### Crates
+
+| Crate | Role |
+|-------|------|
+| `lord-payments` | Payment traits, `SettlementCoordinator`, mock providers |
+| `lord-ecash` | CDK wallet wrapper, `CdkMicroPaymentProvider` (skeleton; see C4) |
+
+Data directory: `{chain_data_dir}/ecash/` (Cashu wallet persistence layout).
+
+The `lord` binary exposes `lord ecash *` only when built with
+`--features ecash` (default **off**). Combine with `lightning` via
+`--features ecash-lightning`.
+
+### CLI
+
+```text
+lord ecash status
+```
+
+Reports JSON status: `enabled`, `mint_urls`, `settlement_threshold_sats`,
+`storage_dir`, `wallet_persistent` (`false` until persistent wallet opened; see C4).
+
+### Market settlement hook (coordinator)
+
+`lord-market` depends on `lord-payments` and routes settlement via
+`SettlementCoordinator`:
+
+| API (`lord-market`) | Behavior |
+|---------------------|----------|
+| `create_invoice_for_contract()` | Routes by threshold; stubs return `PaymentError::NotImplemented` |
+| `settle_storage_contract()` | Routes by threshold; stubs return `NotImplemented` |
+| `pay_challenge_fee()` | Always ecash rail; stubs return `NotImplemented` |
+
+`lord-lightning` exposes `LightningPaymentProvider` implementing
+`LightningSettlementProvider` + `LightningInvoicePayer` (stubs).
+
+### Settings (`lord.yaml`)
+
+| Key | Type | Behavior |
+|-----|------|----------|
+| `ecash_enabled` | `bool` | OR-merge; enables ecash wallet paths |
+| `ecash_mint_urls` | `string[]` | Required non-empty when `ecash_enabled` and ecash is used |
+| `ecash_settlement_threshold_sats` | `u64` | Default `1000`; Lightning vs ecash routing boundary |
+
+Environment variables: `ORD_ECASH_ENABLED`, `ORD_ECASH_MINT_URLS` (comma-separated),
+`ORD_ECASH_SETTLEMENT_THRESHOLD_SATS`.
+
+`SettlementSettings::from_settings()` reads `ecash_settlement_threshold_sats` via the
+[`SettlementSettingsSource`] trait implemented on `Settings`.
+
+### Ancillary fix (carbonado 2.0)
+
+`lord-storage` verify path updated `Format::Bao` → `Format::Verification` for the
+carbonado 2.0 API rename (required for workspace compile; unrelated to payment logic).
+
+### Exit criteria
+
+```bash
+cargo test -p lord-payments
+cargo test -p lord-ecash
+cargo test -p lord-market
+cargo clippy -p lord-payments -p lord-ecash -p lord-market -- -D warnings
+cargo test -p lord --features ecash --no-run
+just ecash-smoke
+```
+
+Phase C4 (Track C): live settlement wiring
+-------------------------------------------
+
+### Crates
+
+| Crate | Role |
+|-------|------|
+| `lord-lightning` | Live BOLT11 invoice creation / payment via embedded LDK node |
+| `lord-ecash` | Persistent CDK SQLite wallet; ecash binding receipts + melt bridge |
+| `lord-market` | `coordinator_for_chain`, contract validation, `invoice_hash` persistence |
+
+Build with `--features ecash-lightning` (enables both `lightning` and `ecash`
+crate features on `lord` and `lord-market`; default **off**) to wire live LDK +
+CDK providers. Without the feature, settlement APIs keep C3 stub behavior.
+
+### CLI
+
+```text
+lord market invoice <bao_root>    # feature `lightning`
+```
+
+Creates a settlement invoice for an **existing** storage contract. When the
+Lightning rail is selected and invoice creation succeeds, `invoice_hash` is
+persisted on the `StorageContract` record in market LMDB.
+
+### Market settlement (`coordinator_for_chain`)
+
+| API (`lord-market`) | Behavior |
+|---------------------|----------|
+| `coordinator_for_chain()` | Live `LightningPaymentProvider` + `CdkMicroPaymentProvider` when `ecash-lightning` compiled; stubs otherwise |
+| `create_invoice_for_contract()` | Requires contract; routes by threshold; persists `invoice_hash` on Lightning success |
+| `settle_storage_contract()` | C5: Bao challenge gate + `invoice_hash` match; ecash rail verifies binding receipts |
+| `pay_challenge_fee()` | Ecash rail; binding-tied receipt when ecash enabled |
+
+`SettlementAppSettings` and `SettlementChainContext` mirror `lord.yaml` ecash
+keys and Bitcoin RPC / `lightning_listen` for regtest/signet paths.
+
+`SettlementResult` includes optional `payment_hash` for BOLT11 invoices.
+
+### `lord-lightning` invoice flow
+
+- `LightningPaymentProvider::from_running_node(&RunningNode)`
+- `create_contract_invoice_on_node()` — BOLT11 via `node.bolt11_payment().receive()`
+- Invoice memo includes `bao_root` hex + `PaymentPurpose`
+- `pay_invoice_on_node()` — outbound BOLT11 via LDK
+- `settle_contract_on_node()` — inbound succeeded payment check (best-effort)
+
+### `lord-ecash` CDK wallet
+
+- Persistent SQLite wallet: `{chain_data_dir}/ecash/wallet.sqlite`
+- `EcashWallet::open_persistent()` opens CDK wallet + seed file
+- `CdkMicroPaymentProvider::with_lightning_payer()` — melt bridge delegates BOLT11 pay to LDK
+- Off-hot-path `pay_micro()` returns `ecash:binding:{bao_root}:{purpose}` receipts (no mandatory testnut HTTP in CI)
+- `EcashStatus.wallet_persistent` — `true` when SQLite wallet DB is open (replaces C3 `live_mint_http` field)
+
+### Exit criteria
+
+```bash
+cargo test -p lord-payments -p lord-ecash -p lord-market -p lord-lightning
+cargo test -p lord --features ecash-lightning --no-run
+cargo clippy -p lord-payments -p lord-ecash -p lord-market -p lord-lightning -- -D warnings
+cargo fmt -p lord-payments -p lord-ecash -p lord-market -p lord-lightning -p lord-ltp -p lord-iroh -p lord -- --check
+just ecash-smoke
+just settlement-smoke
+```
+
+Phase C5 (Track C): Bao-gated settlement + payment proofs
+--------------------------------------------------------
+
+### LTP payment proof frames (`lord-ltp`)
+
+| Type | Status | Purpose |
+|------|--------|---------|
+| `PaymentProof` | **Normative (C5)** | Ecash binding receipt gossip (`ecash:binding:{bao_root}:{purpose}`) |
+| `BaoChallenge` | **Normative (C5)** | Sampled Bao possession challenge (`sample_rate` > 0) |
+
+Inbound payment proofs stage to `{chain_data_dir}/ltp/inbound_payment_proofs.jsonl`
+after purpose whitelist + ecash binding validation. Inbound `BaoChallenge` frames
+stage to `ltp/inbound_bao_challenges.jsonl`. Both require an existing
+`StorageContract` for the `bao_root` before append.
+
+### Iroh gossip (`lord-iroh`)
+
+- `publish_payment_proof()` / `publish_bao_challenge()` broadcast on the per-chain topic
+- `handle_inbound_message()` dispatches `BrecciaTail`, `PaymentProof`, and `BaoChallenge`
+- Rejects unbound ecash references and unknown `bao_root` contracts before persist
+
+### Bao challenge gate (`lord-market`)
+
+| API | Behavior |
+|-----|----------|
+| `challenge_replication()` | Persists `ChallengeProof` in market LMDB (`CHALLENGE_PROOFS`) on success |
+| `settle_storage_contract()` | Requires persisted proof **or** `SettleContractOptions::inline_sample_rate` before coordinator settle |
+| `SettlementCoordinator::settle_contract` | Requires `SettlementCredentials::bao_gate_satisfied` (enforced in coordinator, not CLI-only) |
+| Ecash-rail settle | Verifies **persisted** receipt from `ECASH_RECEIPTS` (written at ecash invoice creation) |
+
+**Gate trust model:** the Bao gate trusts local market LMDB integrity — any row in
+`CHALLENGE_PROOFS` satisfies the gate. Proof rows are written only after
+`verify_commitment` succeeds in `challenge_replication`.
+
+### Ecash receipt persistence
+
+- `create_invoice_for_contract()` persists ecash `SettlementResult::reference` in
+  `ECASH_RECEIPTS` when the ecash rail is selected
+- `settle_storage_contract()` loads the stored receipt into
+  `SettlementCredentials::ecash_receipt` (not re-derived at settle time)
+
+### CLI
+
+```text
+lord market settle <bao_root> [--sample-rate N]
+```
+
+Runs settlement only after the Bao challenge gate passes (persisted proof from
+`lord market challenge`, or inline `--sample-rate`).
+
+### `verify_micro` (`lord-payments` / `lord-ecash`)
+
+- [`MicroPaymentProvider::verify_micro`] checks the **stored** receipt string matches
+  [`ecash_binding_reference`] for the binding
+- When the C6 micro-payment ledger is open, verification also requires a matching row in
+  `{chain_data_dir}/ecash/micro_payments.jsonl` (see Phase C6 below); otherwise verification
+  falls back to reference-string match only
+- Coordinator ecash-rail settle fails when no receipt was persisted at invoice time
+
+### Exit criteria
+
+```bash
+cargo test -p lord-payments -p lord-ecash -p lord-market -p lord-lightning -p lord-ltp -p lord-iroh
+cargo test -p lord --features ecash-lightning --no-run
+cargo clippy -p lord-payments -p lord-ecash -p lord-market -p lord-lightning -p lord-ltp -p lord-iroh -- -D warnings
+cargo fmt -p lord-payments -p lord-ecash -p lord-market -p lord-lightning -p lord-ltp -p lord-iroh -p lord -- --check
+just ecash-smoke
+just settlement-smoke
+just settlement-gate-smoke
+```
+
+**Limitation (C4):** regtest invoice smoke creates BOLT11 without requiring open
+channels; paying invoices still needs channel liquidity (documented in
+`lightning_invoice_smoke`).
+
+Phase C6 (Track C): operator runbook + production settlement
+-------------------------------------------------------------
+
+### Long-lived LDK node reuse (`lord-lightning`)
+
+| Type | Role |
+|------|------|
+| `SharedRunningNode` | `Arc<RunningNode>` handle for `lord lightning serve` |
+| `LightningPaymentProvider::from_shared_node` | Reuses node for invoice create / pay / settle (no per-call restart) |
+| `coordinator_for_chain_with_lightning` | Optional `SharedRunningNode` injection from caller |
+
+When `lord lightning serve` runs in a separate process, settlement still uses
+node-per-call unless a shared handle is injected (IPC documented in
+[operator runbook](../guides/operator.md)). Within the same process, pass
+`SharedRunningNode` from the serve task into market settlement APIs.
+
+### Market-driven pricing (`lord-market`)
+
+| Key | Default | Behavior |
+|-----|---------|----------|
+| `market_contract_amount_sats` | `10000` | Storage-contract invoice amount |
+| `market_challenge_fee_sats` | `10` | `pay_challenge_fee` ecash amount |
+
+Environment: `ORD_MARKET_CONTRACT_AMOUNT_SATS`, `ORD_MARKET_CHALLENGE_FEE_SATS`.
+
+Per-contract overrides live in market LMDB `CONTRACT_PRICING` (side table; does
+not alter `StorageContract` rkyv layout). Zero amounts are rejected at settings
+load.
+
+### Mint allowlists (`lord-ecash` / `Settings`)
+
+| Key | Behavior |
+|-----|----------|
+| `ecash_mint_allowlist` | When set, every `ecash_mint_urls` entry must be listed |
+
+Environment: `ORD_ECASH_MINT_ALLOWLIST` (comma-separated). Enforced in
+`Settings::validate_ecash()` and `EcashConfig::validate_for_use()`.
+
+### Wallet-backed `verify_micro` (`lord-ecash`)
+
+- `pay_micro()` appends a binding record to `{chain_data_dir}/ecash/micro_payments.jsonl`
+  when the ecash ledger is open (coordinator wires ledger for live ecash)
+- `verify_micro()` requires a ledger row matching `bao_root`, purpose, amount, and
+  reference — not just string equality
+- **Off-hot-path limitation:** when no ledger is open, verification falls back to
+  reference-string match only (documented for CI / disabled-wallet paths)
+
+### Operator runbook
+
+See [operator runbook](../guides/operator.md) for Lightning channel funding,
+mint allowlists, and threshold tuning checklists.
+
+### Exit criteria
+
+```bash
+cargo test -p lord-payments -p lord-ecash -p lord-market -p lord-lightning -p lord-ltp
+cargo test -p lord --features ecash-lightning --no-run
+cargo clippy -p lord-payments -p lord-ecash -p lord-market -p lord-lightning -p lord-ltp -- -D warnings
+cargo fmt -p lord-payments -p lord-ecash -p lord-market -p lord-lightning -p lord-ltp -p lord -- --check
+just ecash-smoke
+just settlement-smoke
+just settlement-gate-smoke
+just operator-payments-smoke
+```
 
 PR3 (complete): commitment, OTS ordering, breccia
 ------------------------------------------------

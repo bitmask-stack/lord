@@ -258,3 +258,88 @@ lord --config /etc/lord/lord.yaml server
 ```
 
 See [Settings](settings.md).
+
+Storage market payments (Lightning + ecash)
+-------------------------------------------
+
+Settlement for storage contracts, challenge fees, and LTP micro-payments is
+configured under the same chain-scoped `{chain_data_dir}` as the market LMDB
+(`{chain_data_dir}/market/`).
+
+### Lightning channel funding
+
+Run a long-lived embedded node (recommended for production BOLT11 settlement):
+
+```bash
+lord --chain <CHAIN> lightning serve
+lord --chain <CHAIN> lightning status
+```
+
+| Chain | Notes |
+|-------|-------|
+| **Regtest** | `bitcoind -regtest`; fund LDK on-chain wallet; open channels between peers for pay/settle smoke |
+| **Signet** | Same as regtest with signet RPC; use for acceptance before mainnet |
+| **Mainnet** | Fund on-chain wallet; open inbound/outbound channels for invoice liquidity |
+
+Persistence: `{chain_data_dir}/lightning/`. Settlement reuses a running node when
+you inject [`SharedRunningNode`] into
+[`coordinator_for_chain_with_lightning`] (same process). Separate `lightning serve`
++ `market invoice` processes still use node-per-call until IPC lands — avoid
+concurrent `serve` + embedded node-per-call against the same storage dir (LMDB lock).
+
+Regtest/signet smoke creates BOLT11 invoices without open channels; **paying**
+invoices requires channel liquidity.
+
+### Ecash mint allowlists
+
+Restrict which Cashu mint URLs operators may use:
+
+```yaml
+ecash_enabled: true
+ecash_mint_urls:
+  - "https://mint.example"
+ecash_mint_allowlist:
+  - "https://mint.example"
+```
+
+Every `ecash_mint_urls` entry must appear in `ecash_mint_allowlist` when the
+allowlist is set. Environment override: `ORD_ECASH_MINT_ALLOWLIST` (comma-separated).
+
+Validation runs at `lord.yaml` load and in `EcashConfig::validate_for_use()`.
+
+### Threshold and pricing tuning
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `ecash_settlement_threshold_sats` | `1000` | Amounts **below** this use ecash; at/above use Lightning |
+| `market_contract_amount_sats` | `10000` | Storage-contract invoice amount |
+| `market_challenge_fee_sats` | `10` | Provider challenge fee (always ecash rail) |
+
+Environment: `ORD_ECASH_SETTLEMENT_THRESHOLD_SATS`,
+`ORD_MARKET_CONTRACT_AMOUNT_SATS`, `ORD_MARKET_CHALLENGE_FEE_SATS`.
+
+Zero values for any of the above are rejected at settings load. Per-contract
+overrides may be stored in market LMDB `CONTRACT_PRICING` (side table).
+
+### Ecash wallet ledger
+
+Persistent ecash state: `{chain_data_dir}/ecash/` (`wallet.sqlite`, `wallet.seed`,
+`micro_payments.jsonl`). When the ledger is open, `verify_micro` checks
+`micro_payments.jsonl` for a binding-tied payment — not only receipt string match.
+
+```bash
+lord --chain <CHAIN> ecash status
+```
+
+### Settlement health checks
+
+```bash
+lord --chain <CHAIN> market invoice <bao_root>   # requires contract + ecash-lightning build
+lord --chain <CHAIN> market challenge <bao_root>
+lord --chain <CHAIN> market settle <bao_root>
+just settlement-smoke
+just operator-payments-smoke
+```
+
+[`SharedRunningNode`]: ../lord/implementation.md
+[`coordinator_for_chain_with_lightning`]: ../lord/implementation.md

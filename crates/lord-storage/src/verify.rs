@@ -3,11 +3,11 @@ use std::path::Path;
 use anyhow::{Context, Result, bail, ensure};
 use carbonado::{
   constants::{Format, SLICE_LEN},
-  file::Header,
+  file::{self, Header},
   verify_slice,
 };
 
-use crate::decode::{authenticate_header, keyed_decode_bao};
+use crate::decode::authenticate_header;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 
@@ -101,7 +101,7 @@ pub fn verify_commitment(
   authenticate_header(&master_key, &header)?;
 
   let format_bits = Format::from(meta.format);
-  if !format_bits.contains(Format::Bao) {
+  if !format_bits.contains(Format::Verification) {
     bail!("format c{} does not include Bao verifiability", meta.format);
   }
 
@@ -121,8 +121,12 @@ pub fn verify_commitment(
   indices.shuffle(&mut rng);
   indices.truncate(samples as usize);
 
-  let decoded =
-    keyed_decode_bao(body, &bao_root, meta.format).context("keyed bao verification failed")?;
+  let (decoded_header, decoded) =
+    file::decode(&master_key, &encoded).context("carbonado decode verification failed")?;
+  ensure!(
+    decoded_header.hash.as_bytes() == &bao_root,
+    "decoded carbonado header hash does not match requested bao root"
+  );
 
   for index in indices {
     verify_sampled_slice(body, &decoded, index, &bao_root, meta.format)
@@ -179,7 +183,7 @@ pub fn verify_carbonado_header_binding(
   Ok(())
 }
 
-/// Cross-check a sampled slice against carbonado's partial proof API (`verify_slice`).
+/// Sample a slice via carbonado's partial proof API (`verify_slice`).
 fn verify_sampled_slice(
   body: &[u8],
   decoded: &[u8],
@@ -191,14 +195,8 @@ fn verify_sampled_slice(
   if slice_start >= decoded.len() as u64 {
     return Ok(());
   }
-  let slice_end = (slice_start + u64::from(SLICE_LEN)).min(decoded.len() as u64);
-  let extracted = verify_slice(body, index, 1, bao_root, format)
-    .map_err(|err| anyhow::anyhow!("bao slice extract failed: {err}"))?;
-  let actual = &decoded[slice_start as usize..slice_end as usize];
-  ensure!(
-    actual == extracted.as_slice(),
-    "bao slice {index} does not match partial proof extract"
-  );
+  verify_slice(body, index, 1, bao_root, format)
+    .map_err(|err| anyhow::anyhow!("bao slice {index} failed verification: {err}"))?;
   Ok(())
 }
 
@@ -418,7 +416,13 @@ mod tests {
 
     let err = verify_commitment(dir.path(), &encoded.bao_root, VerifyOptions::new(8))
       .expect_err("tampered");
-    assert!(err.to_string().contains("keyed bao") || err.to_string().contains("authentication"));
+    let message = err.to_string();
+    assert!(
+      message.contains("carbonado decode")
+        || message.contains("bao slice")
+        || message.contains("authentication"),
+      "unexpected error: {message}"
+    );
   }
 
   #[test]

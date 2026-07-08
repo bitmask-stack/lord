@@ -5,7 +5,8 @@ Lord Design Document
 > index/wallet, Carbonado storage, filepack, OTS commitments, breccia append log,
 > commitment explorer). **Operator stack shipped** (embedded Rust calendar,
 > `commit upgrade`, Bitcoin attestation verify, txindex fallback, operator docs).
-> **Planned:** PR4 Lightning (LDK), PR5 storage market (Iroh P2P), PR6 RGB.
+> **Planned:** PR6 RGB. **C2 skeleton shipped:** embedded LDK Lightning (`lord-lightning`,
+> `lord lightning *`, feature `lightning`). Storage market gossip (Iroh P2P) shipped in Phase B.
 > See [implementation notes](implementation.md) for schemas and CLI details.
 > **Networking draft:** [CHIP LTP-0001](chip-ltp-0001.md) (Iroh mempool, storage market, payments annex).
 > This document captures the intended design for **lord**, a fork of [ord](https://github.com/ordinals/ord).
@@ -383,8 +384,10 @@ Open Questions and TODOs
 
 | Item | Status |
 |------|--------|
-| Lightning payment flow for storage contracts | **TODO** (PR4) |
-| Storage market pricing and contract enforcement | **TODO** (PR5) |
+| Lightning payment flow for storage contracts | **Shipped (C6)** — live BOLT11 + Bao challenge gate; reuse long-lived node via `SharedRunningNode` |
+| Ecash micro-payments (challenge fees, LTP) | **Shipped (C6)** — CDK wallet ledger-backed `verify_micro`; mint allowlists; LTP `PaymentProof` gossip |
+| Storage market contracts + LMDB (C1) | **Shipped** — `lord-market`, `lord market *` |
+| Storage market pricing and contract enforcement | **Shipped (C6)** — YAML `market_*_sats` + per-contract `CONTRACT_PRICING` side table |
 | RGB integration (replacing runes) | **TODO** (PR6) |
 | Mutual-aid reciprocity scoring algorithm | **TODO** |
 | Cross-calendar OTS ordering aggregation | **Deferred** — single embedded calendar per chain; federation later |

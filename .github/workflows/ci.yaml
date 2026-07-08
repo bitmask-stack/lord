@@ -118,3 +118,99 @@ jobs:
 
     - name: Test
       run: cargo test --all
+
+  lightning:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Install Rust Toolchain Components
+      uses: actions-rs/toolchain@v1
+      with:
+        components: clippy
+        profile: minimal
+        toolchain: stable
+
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Test lord-lightning
+      run: cargo test -p lord-lightning
+
+    - name: Lightning integration smoke
+      run: cargo test --test integration smoke::lightning_status_smoke --features lightning -- --nocapture
+
+    - name: Clippy lord-lightning
+      run: cargo clippy -p lord-lightning -- -D warnings
+
+    - name: Compile lord with lightning feature
+      run: cargo test -p lord --features lightning --no-run
+
+  ecash:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Install Rust Toolchain Components
+      uses: actions-rs/toolchain@v1
+      with:
+        components: clippy
+        profile: minimal
+        toolchain: stable
+
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Test lord-payments
+      run: cargo test -p lord-payments
+
+    - name: Test lord-ecash
+      run: cargo test -p lord-ecash
+
+    - name: Test lord-market
+      run: cargo test -p lord-market
+
+    - name: Ecash integration smoke (disabled)
+      run: cargo test --test integration smoke::ecash_status_smoke --features ecash -- --exact --nocapture
+
+    - name: Ecash integration smoke (enabled)
+      run: cargo test --test integration smoke::ecash_status_smoke_enabled --features ecash -- --exact --nocapture
+
+    - name: Clippy payment crates
+      run: cargo clippy -p lord-payments -p lord-ecash -p lord-market -- -D warnings
+
+    - name: Compile lord with ecash feature
+      run: cargo test -p lord --features ecash --no-run
+
+  ecash-lightning:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Install Rust Toolchain Components
+      uses: actions-rs/toolchain@v1
+      with:
+        components: clippy
+        profile: minimal
+        toolchain: stable
+
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Settlement smoke
+      run: |
+        cargo test -p lord-payments
+        cargo test -p lord-ecash
+        cargo test -p lord-market settlement::tests:: -- --nocapture
+        cargo test -p lord-lightning payments::tests::lightning_invoice_smoke -- --exact --nocapture
+
+    - name: Market invoice integration smoke
+      run: cargo test --test integration smoke::market_invoice_smoke --features ecash-lightning -- --exact --nocapture
+
+    - name: Clippy payment + lightning crates
+      run: |
+        cargo clippy -p lord-payments -p lord-ecash -p lord-lightning -- -D warnings
+        cargo clippy -p lord-market --features ecash-lightning -- -D warnings
+
+    - name: Compile lord with ecash-lightning feature
+      run: cargo test -p lord --features ecash-lightning --no-run

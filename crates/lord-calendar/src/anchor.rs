@@ -733,7 +733,7 @@ mod tests {
       CalendarConfig::new(crate::chain::Chain::Regtest, None),
     )
     .expect("open");
-    let digest = lord_ltp::commitment_digest(&[11u8; 32]);
+    let digest = lord_ltp::commitment_digest(&[11u8; 32]).expect("digest");
     service.submit_digest(&digest).expect("submit");
     let mut mempool =
       lord_ltp::LtpMempool::open(dir.path().join("regtest"), lord_ltp::LtpChain::Regtest)

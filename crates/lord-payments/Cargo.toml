@@ -1,21 +1,17 @@
 [package]
-name = "lord-ltp"
+name = "lord-payments"
 version = "0.1.0"
-description = "Lord Transport Protocol local mempool for Lord"
+description = "Payment trait abstractions for Lord storage market settlement (Track C3)"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-anyhow = "1.0.90"
-fs2 = "0.4"
 hex.workspace = true
-lord-payments = { path = "../lord-payments" }
-lord-storage = { path = "../lord-storage" }
-opentimestamps = "0.2.0"
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
+serde_json.workspace = true
+thiserror = "2.0.12"
 
 [dev-dependencies]
 tempfile.workspace = true

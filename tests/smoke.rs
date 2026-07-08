@@ -191,7 +191,7 @@ fn ltp_import_smoke() {
   let order_key = hex::decode(&timestamp.ots_order_key).expect("order key");
   let tail = BrecciaTailPayload {
     bao_root,
-    start_digest: commitment_digest(&bao_root),
+    start_digest: commitment_digest(&bao_root).expect("digest"),
     ots_order_key: order_key.clone(),
     attestation_height: Some(42),
     attestation_txid: Some("ab".repeat(32)),
@@ -209,6 +209,228 @@ fn ltp_import_smoke() {
     .stdout_regex(".*")
     .run_and_deserialize_output::<serde_json::Value>();
   assert_eq!(imported["imported"], 1);
+}
+
+#[test]
+fn market_request_status_smoke() {
+  let tempdir = Arc::new(TempDir::new().expect("tempdir"));
+
+  let encoded = CommandBuilder::new("--regtest storage encode market-smoke.txt --format c12")
+    .temp_dir(tempdir.clone())
+    .write("market-smoke.txt", b"market smoke payload")
+    .stdout_regex(".*")
+    .run_and_deserialize_output::<lord_storage::EncodeResult>();
+
+  CommandBuilder::new(format!(
+    "--regtest commit timestamp {} --dry-run",
+    encoded.bao_root
+  ))
+  .temp_dir(tempdir.clone())
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<TimestampResult>();
+
+  let requested = CommandBuilder::new(format!(
+    "--regtest market request {} --replication 2 --visibility public",
+    encoded.bao_root
+  ))
+  .temp_dir(tempdir.clone())
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<lord_market::RequestContractResult>();
+
+  assert_eq!(hex::encode(requested.contract.bao_root), encoded.bao_root);
+  assert_eq!(requested.contract.target_replication, 2);
+
+  let status = CommandBuilder::new(format!("--regtest market status {}", encoded.bao_root))
+    .temp_dir(tempdir.clone())
+    .stdout_regex(".*")
+    .run_and_deserialize_output::<lord_market::MarketStatus>();
+
+  assert_eq!(status.contract.bao_root, requested.contract.bao_root);
+  assert_eq!(status.replication_factor, 0.0);
+
+  let offered =
+    CommandBuilder::new("--regtest market offer --capacity-gib 10 --open-to-unencrypted")
+      .temp_dir(tempdir.clone())
+      .stdout_regex(".*")
+      .run_and_deserialize_output::<lord_market::PublishOfferResult>();
+
+  assert_eq!(offered.offer.capacity_gib, 10);
+  assert!(offered.offer.open_to_unencrypted);
+
+  let challenged = CommandBuilder::new(format!(
+    "--regtest market challenge {} --sample-rate 2",
+    encoded.bao_root
+  ))
+  .temp_dir(tempdir.clone())
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<lord_market::ChallengeResult>();
+
+  assert_eq!(challenged.bao_root, encoded.bao_root);
+  assert!(challenged.local_verify.slices_verified > 0);
+}
+
+#[test]
+fn market_settle_gate_smoke() {
+  let tempdir = Arc::new(TempDir::new().expect("tempdir"));
+
+  let encoded = CommandBuilder::new("--regtest storage encode settle-gate.txt --format c12")
+    .temp_dir(tempdir.clone())
+    .write("settle-gate.txt", b"market settle gate smoke")
+    .stdout_regex(".*")
+    .run_and_deserialize_output::<lord_storage::EncodeResult>();
+
+  CommandBuilder::new(format!(
+    "--regtest commit timestamp {} --dry-run",
+    encoded.bao_root
+  ))
+  .temp_dir(tempdir.clone())
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<TimestampResult>();
+
+  CommandBuilder::new(format!(
+    "--regtest market request {} --replication 1 --visibility public",
+    encoded.bao_root
+  ))
+  .temp_dir(tempdir.clone())
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<lord_market::RequestContractResult>();
+
+  CommandBuilder::new(format!("--regtest market settle {}", encoded.bao_root))
+    .temp_dir(tempdir.clone())
+    .expected_exit_code(1)
+    .stderr_regex("(?s).*bao challenge gate.*")
+    .stdout_regex(".*")
+    .run_and_extract_stdout();
+}
+
+#[cfg(feature = "ecash")]
+#[test]
+fn ecash_status_smoke() {
+  let tempdir = Arc::new(TempDir::new().expect("tempdir"));
+
+  let status = CommandBuilder::new("--regtest ecash status")
+    .temp_dir(tempdir)
+    .stdout_regex(".*")
+    .run_and_deserialize_output::<lord_ecash::EcashStatus>();
+
+  assert!(!status.enabled);
+  assert!(!status.wallet_persistent);
+  assert_eq!(status.settlement_threshold_sats, 1_000);
+  assert!(
+    status.storage_dir.contains("ecash"),
+    "storage_dir: {}",
+    status.storage_dir
+  );
+}
+
+#[cfg(feature = "ecash")]
+#[test]
+fn ecash_status_smoke_enabled() {
+  let tempdir = Arc::new(TempDir::new().expect("tempdir"));
+
+  let status = CommandBuilder::new("--regtest ecash status")
+    .temp_dir(tempdir)
+    .env("ORD_ECASH_ENABLED", "1")
+    .env("ORD_ECASH_MINT_URLS", "https://mint.example")
+    .stdout_regex(".*")
+    .run_and_deserialize_output::<lord_ecash::EcashStatus>();
+
+  assert!(status.enabled);
+  assert!(!status.wallet_persistent);
+  assert_eq!(status.mint_count, 1);
+  assert_eq!(status.mint_urls, vec!["https://mint.example".to_string()]);
+  assert!(
+    status.storage_dir.contains("ecash"),
+    "storage_dir: {}",
+    status.storage_dir
+  );
+}
+
+#[cfg(feature = "ecash-lightning")]
+#[test]
+fn market_invoice_smoke() {
+  let core = mockcore::builder().network(Network::Regtest).build();
+  let tempdir = Arc::new(TempDir::new().expect("tempdir"));
+  core.mine_blocks(1);
+
+  let port = TcpListener::bind("127.0.0.1:0")
+    .expect("bind")
+    .local_addr()
+    .expect("addr")
+    .port();
+
+  let encoded = CommandBuilder::new("--regtest storage encode invoice-smoke.txt --format c12")
+    .temp_dir(tempdir.clone())
+    .write("invoice-smoke.txt", b"market invoice smoke payload")
+    .stdout_regex(".*")
+    .run_and_deserialize_output::<lord_storage::EncodeResult>();
+
+  CommandBuilder::new(format!(
+    "--regtest commit timestamp {} --dry-run",
+    encoded.bao_root
+  ))
+  .temp_dir(tempdir.clone())
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<TimestampResult>();
+
+  CommandBuilder::new(format!(
+    "--regtest market request {} --replication 2 --visibility public",
+    encoded.bao_root
+  ))
+  .temp_dir(tempdir.clone())
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<lord_market::RequestContractResult>();
+
+  let invoice = CommandBuilder::new(format!("--regtest market invoice {}", encoded.bao_root))
+    .temp_dir(tempdir.clone())
+    .core(&core)
+    .env("LIGHTNING_LISTEN", format!("127.0.0.1:{port}"))
+    .stderr_regex(".*")
+    .stdout_regex(".*")
+    .run_and_deserialize_output::<lord_payments::SettlementResult>();
+
+  assert_eq!(invoice.rail, lord_payments::SettlementRail::Lightning);
+  assert!(invoice.reference.starts_with("bolt11:lnbc"));
+  assert!(invoice.payment_hash.is_some());
+
+  let status = CommandBuilder::new(format!("--regtest market status {}", encoded.bao_root))
+    .temp_dir(tempdir)
+    .stdout_regex(".*")
+    .run_and_deserialize_output::<lord_market::MarketStatus>();
+
+  assert_eq!(status.contract.invoice_hash, invoice.payment_hash);
+}
+
+#[cfg(feature = "lightning")]
+#[test]
+fn lightning_status_smoke() {
+  let core = mockcore::builder().network(Network::Regtest).build();
+  let tempdir = Arc::new(TempDir::new().expect("tempdir"));
+  core.mine_blocks(1);
+
+  let port = TcpListener::bind("127.0.0.1:0")
+    .expect("bind")
+    .local_addr()
+    .expect("addr")
+    .port();
+
+  let status = CommandBuilder::new(format!(
+    "--regtest lightning status --listen 127.0.0.1:{port}"
+  ))
+  .temp_dir(tempdir.clone())
+  .core(&core)
+  .stderr_regex(".*")
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<lord_lightning::LightningStatus>();
+
+  assert!(!status.node_id.is_empty());
+  assert!(status.is_running);
+  assert!(
+    status.storage_dir.contains("lightning"),
+    "storage_dir: {}",
+    status.storage_dir
+  );
+  assert_eq!(status.channel_count, 0);
 }
 
 #[test]

@@ -7,6 +7,9 @@
 #   {data_dir}/carbonado/          — Carbonado blob files ({bao_root}.c{NN})
 #   {data_dir}/filepack/           — filepack manifest directories
 #   {data_dir}/storage/            — commitment metadata LMDB (no blob bytes)
+#   {data_dir}/market/             — storage market contracts LMDB (schema 1)
+#   {data_dir}/lightning/          — embedded LDK node persistence (feature `lightning`)
+#   {data_dir}/ecash/              — Cashu ecash wallet persistence (feature `ecash`)
 
 # see `lord --help` for setting documentation
 
@@ -24,6 +27,18 @@ chain: mainnet
 # calendar_ltp_priority: true
 # p2p_bootstrap_peers:
 #   - "<iroh-endpoint-id-hex>"
+# mutual_aid_enabled: false
+# encrypted_only_preference: false
+# open_to_unencrypted: false
+# lightning_listen: 127.0.0.1:9735
+# ecash_enabled: false
+# ecash_mint_urls:
+#   - "https://mint.example"
+# ecash_mint_allowlist:
+#   - "https://mint.example"
+# ecash_settlement_threshold_sats: 1000
+# market_contract_amount_sats: 10000
+# market_challenge_fee_sats: 10
 commit_interval: 10000
 config: /var/lib/lord/lord.yaml
 config_dir: /var/lib/lord

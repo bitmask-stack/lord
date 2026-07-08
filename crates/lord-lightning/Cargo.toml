@@ -1,7 +1,7 @@
 [package]
-name = "lord-ltp"
+name = "lord-lightning"
 version = "0.1.0"
-description = "Lord Transport Protocol local mempool for Lord"
+description = "Embedded LDK Lightning node for Lord (Track C2)"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -9,13 +9,16 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow = "1.0.90"
-fs2 = "0.4"
+bitcoin.workspace = true
 hex.workspace = true
+ldk-node = "0.7"
+lightning = "0.2"
+log = "0.4.14"
 lord-payments = { path = "../lord-payments" }
-lord-storage = { path = "../lord-storage" }
-opentimestamps = "0.2.0"
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
+serde_json.workspace = true
+tokio = { version = "1.43.0", features = ["rt-multi-thread", "macros", "signal"] }
 
 [dev-dependencies]
+mockcore = { path = "../mockcore" }
 tempfile.workspace = true

@@ -67,7 +67,7 @@ impl Ltp {
         let bao_root: [u8; 32] = bao_root_bytes
           .try_into()
           .map_err(|_| anyhow::anyhow!("bao root must be 32 bytes"))?;
-        let start_digest = lord_ltp::commitment_digest(&bao_root);
+        let start_digest = lord_ltp::commitment_digest(&bao_root)?;
         let now = std::time::SystemTime::now()
           .duration_since(std::time::UNIX_EPOCH)
           .context("system time before unix epoch")?

@@ -86,12 +86,29 @@ ord wire formats.
 Payments annex (LDK + ecash design)
 -----------------------------------
 
-**Phase PR4** embeds **LDK** for Lightning:
+**Phase C2/C3** embeds **LDK** for Lightning and **CDK** for ecash:
 
-- Storage contracts settle via HTLCs keyed to replication proofs
-- **Ecash** (Cashu-style) is a design option for micro-payments off the hot path;
-  not implemented in Phase A
+| Rail | Crate | Hot path | Amount routing |
+|------|-------|----------|----------------|
+| Lightning (BOLT11 / HTLC) | `lord-lightning` | Storage contract settlement | `amount_sats >= ecash_settlement_threshold_sats` |
+| Ecash (Cashu) | `lord-ecash` | LTP micro-payments, challenge fees | `amount_sats < threshold` (challenge fees always ecash) |
+
+- [`lord-payments`](../../crates/lord-payments) defines `MicroPaymentProvider`,
+  `LightningSettlementProvider`, `LightningInvoicePayer`, and
+  `SettlementCoordinator` (routes by `ecash_settlement_threshold_sats`, default 1000 sats).
+- Payments bind to committed roots via `PaymentBinding { bao_root, purpose, amount_sats }`.
+- **C4 shipped:** live LDK BOLT11 invoice flow via `LightningPaymentProvider`; CDK SQLite
+  wallet + binding-tied ecash receipts; melt bridge via `LightningInvoicePayer`.
+  Live mint HTTP remains optional (no mandatory testnut in default CI).
 - RGB invoices are out of scope until PR6
+
+CLI (feature-gated, default off):
+
+```text
+lord ecash status          # feature `ecash`
+lord lightning status    # feature `lightning`
+lord market invoice <bao_root>   # feature `lightning` (live settlement wiring)
+```
 
 Storage market annex
 --------------------
@@ -144,7 +161,29 @@ All LTP gossip frames use a versioned envelope:
 | `BrecciaTail` | **Normative** | Post-mine breccia head + OTS binding |
 | `OtsUpgradeHint` | **Normative** | Notify peers that a digest has an enriched calendar proof |
 | `ReplicationOffer` | **Stub** | Storage market offer (Track C) |
-| `BaoChallenge` | **Stub** | Sampled Bao possession challenge (Track C) |
+| `BaoChallenge` | **Normative (C5)** | Sampled Bao possession challenge (`bao_root`, `sample_offset`, `sample_rate`) |
+| `PaymentProof` | **Normative (C5)** | Ecash binding receipt (`ecash:binding:{bao_root}:{purpose}`) |
+
+### `PaymentProof` payload (C5)
+
+| Field | Type | Semantics |
+|-------|------|-----------|
+| `bao_root` | `[u8; 32]` | Carbonado commitment root |
+| `purpose` | string | `storage_contract`, `challenge_fee`, or `ltp_micro_payment` |
+| `ecash_reference` | string | Must equal `ecash:binding:{hex(bao_root)}:{purpose}` |
+| `amount_sats` | `u64` | Bound payment amount (> 0) |
+
+Inbound proofs validate binding before append to `ltp/inbound_payment_proofs.jsonl`.
+Settlement uses persisted [`ChallengeProof`] (from `lord market challenge`) or an
+inline sample before HTLC/ecash settle completes.
+
+### `BaoChallenge` payload (C5)
+
+| Field | Type | Semantics |
+|-------|------|-----------|
+| `bao_root` | `[u8; 32]` | Commitment under challenge |
+| `sample_offset` | `u64` | Byte offset for sampled slice |
+| `sample_rate` | `u32` | Number of slices to sample (must be > 0) |
 
 ### `LtpMempoolEntry`
 

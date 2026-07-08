@@ -21,6 +21,56 @@ deps-check:
 smoke:
   cargo test --test integration smoke:: -- --nocapture
 
+market-smoke:
+  cargo test --test integration smoke::market_request_status_smoke -- --nocapture
+
+lightning-smoke:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cargo test -p lord-lightning
+  cargo test --test integration smoke::lightning_status_smoke --features lightning -- --nocapture
+
+ecash-smoke:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cargo test -p lord-payments
+  cargo test -p lord-ecash
+  cargo test -p lord-market
+  cargo test --test integration smoke::ecash_status_smoke --features ecash -- --exact --nocapture
+  cargo test --test integration smoke::ecash_status_smoke_enabled --features ecash -- --exact --nocapture
+
+settlement-smoke:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cargo test -p lord-payments
+  cargo test -p lord-ecash
+  cargo test -p lord-ltp
+  cargo test -p lord-market settlement::tests:: -- --nocapture
+  cargo test -p lord-lightning payments::tests::lightning_invoice_smoke -- --exact --nocapture
+  cargo test -p lord --features ecash-lightning --no-run
+  just operator-payments-smoke
+  just settlement-gate-smoke
+
+operator-payments-smoke:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cargo test -p lord-ecash config::tests::rejects_mint_url_outside_allowlist -- --exact --nocapture
+  cargo test -p lord-ecash provider::tests::verify_micro_requires_ledger_record_when_wallet_open -- --exact --nocapture
+  cargo test -p lord settings::tests::rejects_zero_market_contract_amount_at_load -- --exact --nocapture
+  cargo test -p lord settings::tests::rejects_zero_market_challenge_fee_at_load -- --exact --nocapture
+  cargo test -p lord settings::tests::rejects_mint_url_outside_allowlist_at_load -- --exact --nocapture
+  cargo test -p lord-market settlement::tests::contract_side_table_overrides_default_pricing -- --exact --nocapture
+  cargo test -p lord-market --features lightning settlement::tests::coordinator_reuses_shared_lightning_node_across_operations -- --exact --nocapture
+
+settlement-gate-smoke:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cargo test -p lord-market settlement::tests::settle_rejects_missing_challenge_proof -- --exact --nocapture
+  cargo test -p lord-payments coordinator::tests::settle_contract_ecash_rail_verifies_persisted_receipt -- --exact --nocapture
+  cargo test -p lord-ltp validate::tests::validate_payment_proof_accepts_matching_reference -- --exact --nocapture
+  timeout 120 cargo test -p lord-iroh --test loopback_gossip two_nodes_loopback_payment_proof_gossip -- --exact --nocapture --test-threads=1
+  cargo test --test integration smoke::market_settle_gate_smoke -- --exact --nocapture
+
 # Iroh loopback gossip (serial + wall timeout — avoids stacked endpoint zombies).
 p2p-smoke:
   #!/usr/bin/env bash
@@ -32,11 +82,13 @@ p2p-smoke:
 test-all:
   #!/usr/bin/env bash
   set -euo pipefail
-  echo "== 1/3 smoke (integration CLI) =="
+  echo "== 1/4 smoke (integration CLI) =="
   just smoke
-  echo "== 2/3 p2p-smoke (Iroh loopback) =="
+  echo "== 2/4 market-smoke (storage market CLI) =="
+  just market-smoke
+  echo "== 3/4 p2p-smoke (Iroh loopback) =="
   just p2p-smoke
-  echo "== 3/3 cargo test --all =="
+  echo "== 4/4 cargo test --all =="
   cargo test --all
 
 test: test-all

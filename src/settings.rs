@@ -16,7 +16,17 @@ pub struct Settings {
   calendar_max_anchor_fee_sats: Option<u64>,
   calendar_min_wallet_balance_sats: Option<u64>,
   calendar_ltp_priority: bool,
+  lightning_listen: Option<String>,
+  ecash_enabled: bool,
+  ecash_mint_urls: Option<Vec<String>>,
+  ecash_mint_allowlist: Option<Vec<String>>,
+  ecash_settlement_threshold_sats: Option<u64>,
+  market_contract_amount_sats: Option<u64>,
+  market_challenge_fee_sats: Option<u64>,
   p2p_bootstrap_peers: Option<Vec<String>>,
+  mutual_aid_enabled: bool,
+  encrypted_only_preference: bool,
+  open_to_unencrypted: bool,
   commit_interval: Option<usize>,
   config: Option<PathBuf>,
   config_dir: Option<PathBuf>,
@@ -117,6 +127,15 @@ impl Settings {
       _ => {}
     };
 
+    if settings.encrypted_only_preference() && settings.open_to_unencrypted() {
+      bail!(
+        "encrypted_only_preference and open_to_unencrypted are mutually exclusive in lord.yaml"
+      );
+    }
+
+    settings.validate_ecash()?;
+    settings.validate_settlement_pricing()?;
+
     Ok(settings)
   }
 
@@ -140,7 +159,23 @@ impl Settings {
         .calendar_min_wallet_balance_sats
         .or(source.calendar_min_wallet_balance_sats),
       calendar_ltp_priority: self.calendar_ltp_priority || source.calendar_ltp_priority,
+      lightning_listen: self.lightning_listen.or(source.lightning_listen),
+      ecash_enabled: self.ecash_enabled || source.ecash_enabled,
+      ecash_mint_urls: self.ecash_mint_urls.or(source.ecash_mint_urls),
+      ecash_mint_allowlist: self.ecash_mint_allowlist.or(source.ecash_mint_allowlist),
+      ecash_settlement_threshold_sats: self
+        .ecash_settlement_threshold_sats
+        .or(source.ecash_settlement_threshold_sats),
+      market_contract_amount_sats: self
+        .market_contract_amount_sats
+        .or(source.market_contract_amount_sats),
+      market_challenge_fee_sats: self
+        .market_challenge_fee_sats
+        .or(source.market_challenge_fee_sats),
       p2p_bootstrap_peers: self.p2p_bootstrap_peers.or(source.p2p_bootstrap_peers),
+      mutual_aid_enabled: self.mutual_aid_enabled || source.mutual_aid_enabled,
+      encrypted_only_preference: self.encrypted_only_preference || source.encrypted_only_preference,
+      open_to_unencrypted: self.open_to_unencrypted || source.open_to_unencrypted,
       commit_interval: self.commit_interval.or(source.commit_interval),
       config: self.config.or(source.config),
       config_dir: self.config_dir.or(source.config_dir),
@@ -182,7 +217,17 @@ impl Settings {
       calendar_max_anchor_fee_sats: None,
       calendar_min_wallet_balance_sats: None,
       calendar_ltp_priority: false,
+      lightning_listen: None,
+      ecash_enabled: false,
+      ecash_mint_urls: None,
+      ecash_mint_allowlist: None,
+      ecash_settlement_threshold_sats: None,
+      market_contract_amount_sats: None,
+      market_challenge_fee_sats: None,
       p2p_bootstrap_peers: None,
+      mutual_aid_enabled: false,
+      encrypted_only_preference: false,
+      open_to_unencrypted: false,
       commit_interval: options.commit_interval,
       config: options.config,
       config_dir: options.config_dir,
@@ -269,6 +314,27 @@ impl Settings {
       calendar_max_anchor_fee_sats: get_u64("CALENDAR_MAX_ANCHOR_FEE_SATS")?,
       calendar_min_wallet_balance_sats: get_u64("CALENDAR_MIN_WALLET_BALANCE_SATS")?,
       calendar_ltp_priority: get_bool("CALENDAR_LTP_PRIORITY"),
+      lightning_listen: get_string("LIGHTNING_LISTEN"),
+      ecash_enabled: get_bool("ECASH_ENABLED"),
+      ecash_mint_urls: env.get("ECASH_MINT_URLS").map(|value| {
+        value
+          .split(',')
+          .map(str::trim)
+          .filter(|entry| !entry.is_empty())
+          .map(str::to_string)
+          .collect()
+      }),
+      ecash_mint_allowlist: env.get("ECASH_MINT_ALLOWLIST").map(|value| {
+        value
+          .split(',')
+          .map(str::trim)
+          .filter(|entry| !entry.is_empty())
+          .map(str::to_string)
+          .collect()
+      }),
+      ecash_settlement_threshold_sats: get_u64("ECASH_SETTLEMENT_THRESHOLD_SATS")?,
+      market_contract_amount_sats: get_u64("MARKET_CONTRACT_AMOUNT_SATS")?,
+      market_challenge_fee_sats: get_u64("MARKET_CHALLENGE_FEE_SATS")?,
       p2p_bootstrap_peers: env.get("P2P_BOOTSTRAP_PEERS").map(|value| {
         value
           .split(',')
@@ -276,6 +342,9 @@ impl Settings {
           .map(str::to_string)
           .collect()
       }),
+      mutual_aid_enabled: get_bool("MUTUAL_AID_ENABLED"),
+      encrypted_only_preference: get_bool("ENCRYPTED_ONLY_PREFERENCE"),
+      open_to_unencrypted: get_bool("OPEN_TO_UNENCRYPTED"),
       commit_interval: get_usize("COMMIT_INTERVAL")?,
       config: get_path("CONFIG"),
       config_dir: get_path("CONFIG_DIR"),
@@ -311,7 +380,17 @@ impl Settings {
       calendar_max_anchor_fee_sats: None,
       calendar_min_wallet_balance_sats: None,
       calendar_ltp_priority: false,
+      lightning_listen: None,
+      ecash_enabled: false,
+      ecash_mint_urls: None,
+      ecash_mint_allowlist: None,
+      ecash_settlement_threshold_sats: None,
+      market_contract_amount_sats: None,
+      market_challenge_fee_sats: None,
       p2p_bootstrap_peers: None,
+      mutual_aid_enabled: false,
+      encrypted_only_preference: false,
+      open_to_unencrypted: false,
       commit_interval: None,
       config: None,
       config_dir: None,
@@ -384,7 +463,17 @@ impl Settings {
       calendar_max_anchor_fee_sats: self.calendar_max_anchor_fee_sats,
       calendar_min_wallet_balance_sats: self.calendar_min_wallet_balance_sats,
       calendar_ltp_priority: self.calendar_ltp_priority,
+      lightning_listen: self.lightning_listen,
+      ecash_enabled: self.ecash_enabled,
+      ecash_mint_urls: self.ecash_mint_urls,
+      ecash_mint_allowlist: self.ecash_mint_allowlist,
+      ecash_settlement_threshold_sats: self.ecash_settlement_threshold_sats,
+      market_contract_amount_sats: self.market_contract_amount_sats,
+      market_challenge_fee_sats: self.market_challenge_fee_sats,
       p2p_bootstrap_peers: self.p2p_bootstrap_peers,
+      mutual_aid_enabled: self.mutual_aid_enabled,
+      encrypted_only_preference: self.encrypted_only_preference,
+      open_to_unencrypted: self.open_to_unencrypted,
       commit_interval: Some(self.commit_interval.unwrap_or(5000)),
       config: None,
       config_dir: None,
@@ -553,6 +642,164 @@ impl Settings {
     self.calendar_ltp_priority
   }
 
+  pub fn lightning_listen(&self) -> &str {
+    #[cfg(feature = "lightning")]
+    {
+      return self
+        .lightning_listen
+        .as_deref()
+        .unwrap_or(lord_lightning::DEFAULT_LIGHTNING_LISTEN);
+    }
+    #[cfg(not(feature = "lightning"))]
+    {
+      return self.lightning_listen.as_deref().unwrap_or("127.0.0.1:9735");
+    }
+  }
+
+  pub fn ecash_enabled(&self) -> bool {
+    self.ecash_enabled
+  }
+
+  pub fn ecash_mint_urls(&self) -> Vec<String> {
+    self.ecash_mint_urls.clone().unwrap_or_default()
+  }
+
+  pub fn ecash_mint_allowlist(&self) -> Option<Vec<String>> {
+    self.ecash_mint_allowlist.clone()
+  }
+
+  pub fn ecash_settlement_threshold_sats(&self) -> u64 {
+    self.ecash_settlement_threshold_sats.unwrap_or(1_000)
+  }
+
+  pub fn market_contract_amount_sats(&self) -> u64 {
+    self.market_contract_amount_sats.unwrap_or(10_000)
+  }
+
+  pub fn market_challenge_fee_sats(&self) -> u64 {
+    self.market_challenge_fee_sats.unwrap_or(10)
+  }
+
+  fn normalize_mint_url(url: &str) -> String {
+    let trimmed = url.trim();
+    let without_trailing_slash = trimmed.trim_end_matches('/');
+    if let Some(rest) = without_trailing_slash.strip_prefix("https://") {
+      return format!("https://{rest}");
+    }
+    if let Some(rest) = without_trailing_slash.strip_prefix("http://") {
+      return format!("http://{rest}");
+    }
+    if let Some(rest) = without_trailing_slash.strip_prefix("HTTPS://") {
+      return format!("https://{rest}");
+    }
+    if let Some(rest) = without_trailing_slash.strip_prefix("HTTP://") {
+      return format!("http://{rest}");
+    }
+    without_trailing_slash.to_string()
+  }
+
+  /// Validate ecash settings when ecash operations are requested.
+  pub fn validate_ecash(&self) -> Result<()> {
+    if self.ecash_enabled() && self.ecash_mint_urls().is_empty() {
+      bail!("ecash_enabled requires at least one ecash_mint_urls entry in lord.yaml");
+    }
+    if self.ecash_enabled() && self.ecash_settlement_threshold_sats() == 0 {
+      bail!("ecash_settlement_threshold_sats must be greater than zero when ecash_enabled");
+    }
+    self.validate_mint_allowlist()
+  }
+
+  pub fn validate_mint_allowlist(&self) -> Result<()> {
+    let Some(allowlist) = self.ecash_mint_allowlist() else {
+      return Ok(());
+    };
+    if allowlist.is_empty() {
+      return Ok(());
+    }
+    for url in self.ecash_mint_urls() {
+      let normalized_url = Self::normalize_mint_url(&url);
+      if !allowlist
+        .iter()
+        .any(|allowed| Self::normalize_mint_url(allowed) == normalized_url)
+      {
+        bail!("ecash_mint_urls entry `{url}` is not listed in ecash_mint_allowlist");
+      }
+    }
+    Ok(())
+  }
+
+  pub fn validate_settlement_pricing(&self) -> Result<()> {
+    if self.market_contract_amount_sats == Some(0) {
+      bail!("market_contract_amount_sats must be greater than zero");
+    }
+    if self.market_challenge_fee_sats == Some(0) {
+      bail!("market_challenge_fee_sats must be greater than zero");
+    }
+    Ok(())
+  }
+
+  #[cfg(feature = "ecash")]
+  pub fn ecash_config(&self) -> Result<lord_ecash::EcashConfig> {
+    lord_ecash::EcashConfig::new(
+      self.data_dir(),
+      self.ecash_enabled(),
+      self.ecash_mint_urls(),
+      self.ecash_settlement_threshold_sats(),
+      self.ecash_mint_allowlist(),
+    )
+  }
+
+  pub fn settlement_settings(&self) -> lord_market::SettlementSettings {
+    lord_market::SettlementSettings::from_settings(self)
+  }
+
+  pub fn settlement_app_settings(&self) -> lord_market::SettlementAppSettings {
+    lord_market::SettlementAppSettings {
+      ecash_enabled: self.ecash_enabled(),
+      ecash_mint_urls: self.ecash_mint_urls(),
+      ecash_mint_allowlist: self.ecash_mint_allowlist(),
+    }
+  }
+
+  pub fn settlement_chain_context(&self) -> Result<lord_market::SettlementChainContext> {
+    #[cfg(feature = "lightning")]
+    {
+      use lord_lightning::read_cookie_credentials;
+
+      let mut context = lord_market::SettlementChainContext::new(
+        self.data_dir(),
+        self.chain().network(),
+        self.bitcoin_rpc_url(None),
+        self.lightning_listen(),
+      );
+      match self.bitcoin_credentials()? {
+        Auth::UserPass(user, password) => {
+          context = context.with_rpc_credentials(user, password);
+        }
+        Auth::CookieFile(path) => {
+          let (user, password) = read_cookie_credentials(&path)?;
+          context = context
+            .with_cookie_file(path)
+            .with_rpc_credentials(user, password);
+        }
+        Auth::None => {
+          bail!("bitcoin RPC credentials are required for settlement");
+        }
+      }
+      return Ok(context);
+    }
+
+    #[cfg(not(feature = "lightning"))]
+    {
+      Ok(lord_market::SettlementChainContext::new(
+        self.data_dir(),
+        self.chain().network(),
+        self.bitcoin_rpc_url(None),
+        self.lightning_listen(),
+      ))
+    }
+  }
+
   pub fn anchor_config(&self) -> lord_calendar::AnchorConfig {
     let mut config = lord_calendar::anchor_config_for_chain(self.calendar_chain());
     config.max_anchor_fee_sats = self.calendar_max_anchor_fee_sats;
@@ -563,6 +810,18 @@ impl Settings {
 
   pub fn p2p_bootstrap_peers(&self) -> Vec<String> {
     self.p2p_bootstrap_peers.clone().unwrap_or_default()
+  }
+
+  pub fn mutual_aid_enabled(&self) -> bool {
+    self.mutual_aid_enabled
+  }
+
+  pub fn encrypted_only_preference(&self) -> bool {
+    self.encrypted_only_preference
+  }
+
+  pub fn open_to_unencrypted(&self) -> bool {
+    self.open_to_unencrypted
   }
 
   pub fn commit_interval(&self) -> usize {
@@ -676,6 +935,20 @@ impl Settings {
       Runtime::new()
     }
     .context("failed to initialize runtime")
+  }
+}
+
+impl lord_market::SettlementSettingsSource for Settings {
+  fn ecash_settlement_threshold_sats(&self) -> u64 {
+    self.ecash_settlement_threshold_sats()
+  }
+
+  fn market_contract_amount_sats(&self) -> u64 {
+    self.market_contract_amount_sats()
+  }
+
+  fn market_challenge_fee_sats(&self) -> u64 {
+    self.market_challenge_fee_sats()
   }
 }
 
@@ -1261,6 +1534,7 @@ mod tests {
       ("CALENDAR_LISTEN", "127.0.0.1:14788"),
       ("CALENDAR_URI", "http://127.0.0.1:14788"),
       ("CALENDAR_URL", "http://calendar.example/timestamp"),
+      ("LIGHTNING_LISTEN", "127.0.0.1:9736"),
       ("COMMIT_INTERVAL", "1"),
       ("CONFIG", "config"),
       ("CONFIG_DIR", "config dir"),
@@ -1300,7 +1574,17 @@ mod tests {
         calendar_max_anchor_fee_sats: None,
         calendar_min_wallet_balance_sats: None,
         calendar_ltp_priority: false,
+        lightning_listen: Some("127.0.0.1:9736".into()),
+        ecash_enabled: false,
+        ecash_mint_urls: None,
+        ecash_mint_allowlist: None,
+        ecash_settlement_threshold_sats: None,
+        market_contract_amount_sats: None,
+        market_challenge_fee_sats: None,
         p2p_bootstrap_peers: None,
+        mutual_aid_enabled: false,
+        encrypted_only_preference: false,
+        open_to_unencrypted: false,
         commit_interval: Some(1),
         savepoint_interval: Some(10),
         max_savepoints: Some(2),
@@ -1366,7 +1650,17 @@ mod tests {
         calendar_max_anchor_fee_sats: None,
         calendar_min_wallet_balance_sats: None,
         calendar_ltp_priority: false,
+        lightning_listen: None,
+        ecash_enabled: false,
+        ecash_mint_urls: None,
+        ecash_mint_allowlist: None,
+        ecash_settlement_threshold_sats: None,
+        market_contract_amount_sats: None,
+        market_challenge_fee_sats: None,
         p2p_bootstrap_peers: None,
+        mutual_aid_enabled: false,
+        encrypted_only_preference: false,
+        open_to_unencrypted: false,
         commit_interval: Some(1),
         savepoint_interval: Some(10),
         max_savepoints: Some(2),
@@ -1386,6 +1680,107 @@ mod tests {
         server_username: Some("server username".into()),
       }
     );
+  }
+
+  #[test]
+  fn ecash_enabled_requires_mint_urls_when_validated() {
+    let settings = Settings {
+      ecash_enabled: true,
+      ecash_mint_urls: None,
+      ..default()
+    };
+    let err = settings.validate_ecash().expect_err("missing urls");
+    assert!(err.to_string().contains("ecash_mint_urls"));
+  }
+
+  #[test]
+  fn ecash_enabled_rejects_zero_threshold_when_validated() {
+    let settings = Settings {
+      ecash_enabled: true,
+      ecash_mint_urls: Some(vec!["https://mint.example".into()]),
+      ecash_settlement_threshold_sats: Some(0),
+      ..default()
+    };
+    let err = settings.validate_ecash().expect_err("zero threshold");
+    assert!(err.to_string().contains("ecash_settlement_threshold_sats"));
+  }
+
+  #[test]
+  fn ecash_settlement_threshold_defaults_to_1000() {
+    let settings = Settings::default();
+    assert_eq!(settings.ecash_settlement_threshold_sats(), 1_000);
+  }
+
+  #[test]
+  fn settlement_settings_from_settings_uses_yaml_threshold() {
+    let settings = Settings {
+      ecash_settlement_threshold_sats: Some(3_000),
+      ..default()
+    };
+    let settlement = settings.settlement_settings();
+    assert_eq!(settlement.threshold_sats, 3_000);
+  }
+
+  #[test]
+  fn settlement_settings_from_settings_uses_market_pricing() {
+    let settings = Settings {
+      market_contract_amount_sats: Some(25_000),
+      market_challenge_fee_sats: Some(42),
+      ..default()
+    };
+    let settlement = settings.settlement_settings();
+    assert_eq!(settlement.contract_amount_sats, 25_000);
+    assert_eq!(settlement.challenge_fee_sats, 42);
+  }
+
+  #[test]
+  fn rejects_zero_market_contract_amount_at_load() {
+    let err = Settings::merge(
+      Options::default(),
+      vec![("MARKET_CONTRACT_AMOUNT_SATS", "0")]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value.into()))
+        .collect(),
+    )
+    .expect_err("zero contract amount");
+    assert!(err.to_string().contains("market_contract_amount_sats"));
+  }
+
+  #[test]
+  fn rejects_zero_market_challenge_fee_at_load() {
+    let err = Settings::merge(
+      Options::default(),
+      vec![("MARKET_CHALLENGE_FEE_SATS", "0")]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value.into()))
+        .collect(),
+    )
+    .expect_err("zero challenge fee");
+    assert!(err.to_string().contains("market_challenge_fee_sats"));
+  }
+
+  #[test]
+  fn rejects_mint_url_outside_allowlist_at_load() {
+    let tempdir = TempDir::new().unwrap();
+    let config_path = tempdir.path().join("lord.yaml");
+    fs::write(
+      &config_path,
+      r#"ecash_mint_urls:
+  - "https://other.example"
+ecash_mint_allowlist:
+  - "https://mint.example"
+"#,
+    )
+    .unwrap();
+    let err = Settings::merge(
+      Options {
+        config: Some(config_path),
+        ..default()
+      },
+      Default::default(),
+    )
+    .expect_err("allowlist");
+    assert!(err.to_string().contains("ecash_mint_allowlist"));
   }
 
   #[test]

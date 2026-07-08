@@ -14,6 +14,7 @@ hex.workspace = true
 iroh = "1"
 iroh-gossip = { version = "0.101", features = ["net"] }
 lord-ltp = { path = "../lord-ltp" }
+lord-market = { path = "../lord-market" }
 lord-storage = { path = "../lord-storage" }
 n0-future = "0.3"
 postcard = "1"
@@ -26,6 +27,7 @@ tracing = "0.1"
 anyhow = "1.0.90"
 bytes = "1.11"
 lord-ltp = { path = "../lord-ltp" }
+lord-market = { path = "../lord-market" }
 serde_json = { workspace = true }
 tempfile.workspace = true
 tokio = { version = "1.43.0", features = ["rt-multi-thread", "macros", "time"] }

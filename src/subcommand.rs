@@ -2,6 +2,8 @@ use super::*;
 
 pub mod calendar;
 pub mod commit;
+#[cfg(feature = "ecash")]
+pub mod ecash;
 pub mod env;
 #[cfg(feature = "sats")]
 pub mod epochs;
@@ -9,9 +11,12 @@ pub mod filepack;
 #[cfg(feature = "sats")]
 pub mod find;
 pub mod index;
+#[cfg(feature = "lightning")]
+pub mod lightning;
 #[cfg(feature = "sats")]
 pub mod list;
 pub mod ltp;
+pub mod market;
 pub mod p2p;
 #[cfg(feature = "sats")]
 pub mod parse;
@@ -58,6 +63,14 @@ pub(crate) enum Subcommand {
   Calendar(calendar::Calendar),
   #[command(about = "Lord Transport Protocol local mempool")]
   Ltp(ltp::Ltp),
+  #[command(about = "Storage market contracts and replication")]
+  Market(market::Market),
+  #[cfg(feature = "lightning")]
+  #[command(about = "Embedded Lightning node (LDK)")]
+  Lightning(lightning::Lightning),
+  #[cfg(feature = "ecash")]
+  #[command(about = "Cashu ecash wallet (CDK skeleton)")]
+  Ecash(ecash::Ecash),
   #[command(about = "Iroh P2P transport for LTP")]
   P2p(p2p::P2p),
   #[command(about = "Filepack manifest commands")]
@@ -103,6 +116,11 @@ impl Subcommand {
       Self::Commit(commit) => commit.run(settings),
       Self::Calendar(calendar) => calendar.run(settings),
       Self::Ltp(ltp) => ltp.run(settings),
+      Self::Market(market) => market.run(settings),
+      #[cfg(feature = "lightning")]
+      Self::Lightning(lightning) => lightning.run(settings),
+      #[cfg(feature = "ecash")]
+      Self::Ecash(ecash) => ecash.run(settings),
       Self::P2p(p2p) => p2p.run(settings),
       Self::Filepack(filepack) => filepack.run(settings),
       #[cfg(feature = "sats")]

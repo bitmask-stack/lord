@@ -1,0 +1,33 @@
+[package]
+name = "lord-market"
+version = "0.1.0"
+description = "Storage market contracts and replication state for Lord (Track C1)"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+lightning = ["dep:lord-lightning"]
+ecash = ["dep:lord-ecash"]
+ecash-lightning = ["lightning", "ecash"]
+
+[dependencies]
+anyhow = "1.0.90"
+bitcoin.workspace = true
+getrandom = "0.2"
+hex.workspace = true
+heed3.workspace = true
+lord-db = { path = "../lord-db" }
+lord-ecash = { path = "../lord-ecash", optional = true }
+lord-lightning = { path = "../lord-lightning", optional = true }
+lord-payments = { path = "../lord-payments" }
+lord-storage = { path = "../lord-storage" }
+rkyv.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+mockcore = { path = "../mockcore" }
+tempfile.workspace = true
