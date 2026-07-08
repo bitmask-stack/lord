@@ -95,6 +95,8 @@ pub fn builder() -> Builder {
   Builder {
     fail_lock_unspent: false,
     network: Network::Bitcoin,
+    txindex_enabled: true,
+    txindex_synced: true,
     version: 280000,
   }
 }
@@ -102,6 +104,8 @@ pub fn builder() -> Builder {
 pub struct Builder {
   fail_lock_unspent: bool,
   network: Network,
+  txindex_enabled: bool,
+  txindex_synced: bool,
   version: usize,
 }
 
@@ -121,11 +125,29 @@ impl Builder {
     Self { version, ..self }
   }
 
+  pub fn txindex(self, enabled: bool) -> Self {
+    Self {
+      txindex_enabled: enabled,
+      txindex_synced: enabled,
+      ..self
+    }
+  }
+
+  pub fn txindex_syncing(self) -> Self {
+    Self {
+      txindex_enabled: true,
+      txindex_synced: false,
+      ..self
+    }
+  }
+
   pub fn build(self) -> Handle {
     let state = Arc::new(Mutex::new(State::new(
       self.network,
       self.version,
       self.fail_lock_unspent,
+      self.txindex_enabled,
+      self.txindex_synced,
     )));
     let server = Server::new(state.clone());
     let mut io = IoHandler::default();
@@ -277,6 +299,21 @@ impl Handle {
 
   pub fn height(&self) -> u64 {
     u64::try_from(self.state().blocks.len()).unwrap() - 1
+  }
+
+  /// Override the merkle root for a mined block (integration tests only).
+  pub fn set_block_merkle_root_at_height(&self, height: usize, merkle_root: [u8; 32]) {
+    let mut state = self.state.lock().unwrap();
+    let block_hash = *state
+      .hashes
+      .get(height)
+      .expect("block height out of bounds");
+    state
+      .blocks
+      .get_mut(&block_hash)
+      .expect("block missing")
+      .header
+      .merkle_root = TxMerkleNode::from_byte_array(merkle_root);
   }
 
   pub fn invalidate_tip(&self) -> BlockHash {

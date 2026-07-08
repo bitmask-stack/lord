@@ -109,7 +109,13 @@ fn missing_credentials() {
 fn all_endpoints_in_recursive_directory_return_json() {
   let core = mockcore::spawn();
 
-  core.mine_blocks(2);
+  let blocks = core.mine_blocks(2);
+  let tip_hash = blocks
+    .last()
+    .expect("mined blocks")
+    .header
+    .block_hash()
+    .to_string();
 
   let ord_server = TestServer::spawn_with_args(&core, &[]);
 
@@ -122,7 +128,7 @@ fn all_endpoints_in_recursive_directory_return_json() {
 
   assert_eq!(
     ord_server.request("/r/blockhash").json::<String>().unwrap(),
-    "70a93647a8d559c7e7ff2df9bd875f5b726a2ff8ca3562003d257df5a4c47ae2"
+    tip_hash
   );
 
   assert_eq!(
@@ -376,12 +382,12 @@ fn ctrl_c() {
 
   spawn.child.wait().unwrap();
 
-  CommandBuilder::new(format!(
+  let _spawn = CommandBuilder::new(format!(
     "server --no-sync --address 127.0.0.1 --http-port {port}"
   ))
   .temp_dir(tempdir)
   .core(&core)
-  .spawn();
+  .spawn_background();
 
   for attempt in 0.. {
     if let Ok(response) = reqwest::blocking::get(format!("http://localhost:{port}/blockcount"))

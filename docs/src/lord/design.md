@@ -1,10 +1,13 @@
 Lord Design Document
 ====================
 
-> **Status:** Design reference — Phase 0 foundation in progress (PR1a–PR3 complete:
-> inscription/rune removal, heed3 index, heed3 wallet, slim server + `sats` feature,
-> Carbonado storage, OpenTimestamps ordering, breccia append log).
-> See [implementation notes](implementation.md) for what is implemented today.  
+> **Status:** Design reference — **foundation shipped** (PR0–PR3: ord fork, heed3
+> index/wallet, Carbonado storage, filepack, OTS commitments, breccia append log,
+> commitment explorer). **Operator stack shipped** (embedded Rust calendar,
+> `commit upgrade`, Bitcoin attestation verify, txindex fallback, operator docs).
+> **Planned:** PR4 Lightning (LDK), PR5 storage market (Iroh P2P), PR6 RGB.
+> See [implementation notes](implementation.md) for schemas and CLI details.
+> **Networking draft:** [CHIP LTP-0001](chip-ltp-0001.md) (Iroh mempool, storage market, payments annex).
 > This document captures the intended design for **lord**, a fork of [ord](https://github.com/ordinals/ord).
 
 Table of Contents
@@ -41,7 +44,9 @@ In their place, lord introduces a content-addressed storage and commitment syste
 
 Lord creates a **storage market** for both **public** and **private** data, treating the two classes separately. Scarcity is quantified via **replication factor**. Nodes can operate in **mutual aid** mode, offering storage capacity in exchange for others storing their data.
 
-Canonical ordering of committed data is **not** based on Ordinal theory. Instead, ordering follows the **merkle path of the OpenTimestamps proof** combined with the **breadth-first, left-to-right position** of the timestamp commitment.
+Canonical ordering of committed data is **not** based on Ordinal theory. Instead,
+ordering follows the **merkle path** of the OpenTimestamps proof; breadth-first,
+left-to-right traversal is used only to **discover** the first attestation leaf.
 
 Relationship to ord
 ---------------------
@@ -68,22 +73,29 @@ Relationship to ord
 |-------------|------------------|
 | Inscriptions (on-chain content commitment) | Carbonado v2 storage + OpenTimestamps commitment + breccia global index |
 | Runes (fungible tokens) | RGB (TODO) |
-| Sat ordinal ordering | OTS merkle-path + breadth-first timestamp commitment ordering |
+| Sat ordinal ordering | OTS merkle-path order keys (BFS discovery only) |
 
-### Current persistence (Phase 0 — PR1b/PR1c)
+### Current persistence (shipped — PR1b/PR1c/PR2/PR3)
 
-Until Carbonado and breccia land in later phases, lord persists local state with
-**heed3 LMDB** environments via the in-repo `lord-db` crate (heed3 + rkyv):
+Lord persists local state under `{data_dir}/` (mainnet) or `{data_dir}/{chain}/`
+(other chains). Key stores:
 
-| Store | Path | Schema version |
-|-------|------|----------------|
-| Cardinal index | `{data_dir}/index/` (mainnet) or `{data_dir}/{chain}/index/` | `STATISTIC_TO_COUNT` key `0` → **35** |
-| Wallet metadata | `{data_dir}/wallets/<name>/` | `STATISTIC_TO_COUNT` key `0` → **2** |
+| Store | Path | Notes |
+|-------|------|-------|
+| Cardinal index | `{data_dir}/index/` or `{data_dir}/{chain}/index/` | heed3 LMDB; schema **35** |
+| Wallet metadata | `{data_dir}/wallets/<name>/` or `{data_dir}/{chain}/wallets/<name>/` | heed3 LMDB; schema **2** |
+| Carbonado blobs | `{data_dir}/carbonado/` or `{data_dir}/{chain}/carbonado/` | `{bao_root_hex}.c{NN}` files |
+| Filepack | `{data_dir}/filepack/` or `{data_dir}/{chain}/filepack/` | manifest directories |
+| Commitment metadata | `{data_dir}/storage/` or `{data_dir}/{chain}/storage/` | heed3 LMDB (`StorageStore`) |
+| OTS proofs | `{data_dir}/ots/` or `{data_dir}/{chain}/ots/` | `{bao_root_hex}.ots` |
+| Breccia log | `{data_dir}/breccia/` or `{data_dir}/{chain}/breccia/` | `global.breccia` append log |
+| Calendar state | `{data_dir}/calendar/` or `{data_dir}/{chain}/calendar/` | `state.json` snapshot |
 
-There is **no migration** from legacy ord `index.redb` or `wallets/<name>.redb`
-files. Operators must delete legacy redb files and re-index or recreate wallets.
-See [implementation notes](implementation.md) for layout details and clean-break
-error messages.
+All heed3 environments use the in-repo `lord-db` crate (heed3 + rkyv). There is
+**no migration** from legacy ord `index.redb` or `wallets/<name>.redb` files.
+Operators must delete legacy redb files and re-index or recreate wallets. See
+[implementation notes](implementation.md) for layout details and clean-break error
+messages.
 
 Storage: Carbonado v2
 ---------------------
@@ -173,16 +185,22 @@ Lord timestamps committed data using **OpenTimestamps** (OTS).
 
 ### What gets timestamped
 
-Data commitments (Carbonado content addresses / Bao roots / filepack manifests — exact binding TBD) are submitted to the OpenTimestamps calendar network, producing an OTS proof anchored in the Bitcoin blockchain.
+Data commitments are timestamped via **SHA256(bao_root)** as the OTS start digest
+(filepack manifests reference the same Bao root). Proofs are submitted to Lord's
+embedded OpenTimestamps calendar (or an explicit `calendar_url` override),
+producing an OTS proof anchored in the Bitcoin blockchain. Canonical ordering uses
+merkle-path `ots_order_key` encoding — see
+[implementation notes](implementation.md) and the
+[commitments guide](../guides/commitments.md).
 
 ### Canonical ordering (not Ordinal theory)
 
 Lord does **not** use Ordinal theory (sat numbering, satpoints, rarity) for ordering committed data.
 
-Instead, canonical order is determined by:
-
-1. **The merkle path** within the OpenTimestamps proof tree, and
-2. **The position of the timestamp commitment** when the commitment tree is read **left to right, breadth-first**.
+Instead, canonical order is determined by the **merkle path** (per-fork child
+indices) from the proof root to the first attestation leaf. The proof tree is
+walked **breadth-first, left-to-right** only to find that leaf; the sort key is
+path-only (no BFS index suffix).
 
 ```
 Breadth-first, left-to-right traversal example:
@@ -196,12 +214,25 @@ Breadth-first, left-to-right traversal example:
 Traversal order: root → A → B → C → D → E → F
 ```
 
-Two commitments are ordered by comparing their positions in this traversal of the OTS merkle structure.
+Two commitments are ordered by comparing their **merkle-path order keys** derived
+from the OTS proof tree.
 
-**PR3 scope (implemented):** order keys use the big-endian BFS index of the
-first attestation leaf only. Proofs without an attestation use `u64::MAX` as a
-sentinel. The full merkle path (per-fork branch indices along the path to the
-attestation) and cross-calendar aggregation rules remain TBD for a later phase.
+### `OtsOrderKey` encoding (normative)
+
+1. Walk the proof tree **breadth-first, left-to-right** (same queue discipline
+   as the traversal diagram above).
+2. On finding the first `Attestation` leaf, record the **child index at each
+   `Fork`** on the path from root to that leaf (`0` = leftmost child).
+3. `OtsOrderKey` is the concatenation of one byte per fork decision on the
+   path, e.g. path `[1, 0]` encodes as `0x01 0x00`.
+4. **Attestation at root** (no `Fork` on the path): empty path `[]`.
+5. **No attestation leaf:** 8-byte big-endian `u64::MAX` sentinel (sorts last;
+   keeps compatibility with PR3 sentinel ordering).
+6. Compare commitments by **lexicographic order** on `OtsOrderKey` bytes
+   (`COMMITMENT_ORDER` in LMDB).
+
+Path-only encoding is used first; a BFS tie-break suffix is deferred unless
+collisions are observed in practice. Cross-calendar aggregation remains TBD.
 
 ### Why this ordering
 
@@ -345,12 +376,14 @@ Open Questions and TODOs
 
 | Item | Status |
 |------|--------|
-| RGB integration (replacing runes) | TODO |
-| Exact OTS ↔ Carbonado ↔ filepack binding format | TBD |
-| Cross-calendar OTS ordering aggregation | TBD |
-| Bao sampling parameters (frequency, challenge size) | TBD |
-| Lightning payment flow for storage contracts | TBD |
-| Mutual-aid reciprocity scoring algorithm | TBD |
-| Breccia schema and replication state fields | TBD |
-| API/CLI surface changes (inscription/rune removal, new commands) | TBD |
-| Migration path from ord codebase | TBD |
+| Lightning payment flow for storage contracts | **TODO** (PR4) |
+| Storage market pricing and contract enforcement | **TODO** (PR5) |
+| RGB integration (replacing runes) | **TODO** (PR6) |
+| Mutual-aid reciprocity scoring algorithm | **TODO** |
+| Cross-calendar OTS ordering aggregation | **Deferred** — single embedded calendar per chain; federation later |
+| Bao sampling parameters (frequency, challenge size) | **Open** — tune under load |
+| Breccia federation / replication state fields | **Partial** — `lord-commit` append log shipped; federation schema TBD |
+| OTS ↔ Carbonado ↔ filepack binding | **Resolved** — `SHA256(bao_root)` as OTS start digest; `ots_order_key` from merkle-path encoding; see [implementation notes](implementation.md) and [commitments guide](../guides/commitments.md) |
+| API/CLI surface (inscription/rune removal, storage/commit/calendar) | **Resolved** — PR0–PR3 + operator stack shipped |
+| Migration path from ord codebase | **Resolved** — heed3 index/wallet, slim server, `lord.yaml` default probe |
+| Embedded OpenTimestamps calendar | **Resolved** — `crates/lord-calendar` on all chains; `calendar_enabled` / `lord calendar serve` |

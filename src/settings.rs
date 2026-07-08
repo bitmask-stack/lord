@@ -9,6 +9,10 @@ pub struct Settings {
   bitcoin_rpc_url: Option<String>,
   bitcoin_rpc_username: Option<String>,
   chain: Option<Chain>,
+  calendar_enabled: bool,
+  calendar_listen: Option<String>,
+  calendar_uri: Option<String>,
+  calendar_url: Option<String>,
   commit_interval: Option<usize>,
   config: Option<PathBuf>,
   config_dir: Option<PathBuf>,
@@ -61,14 +65,22 @@ impl Settings {
     let config_path = if let Some(path) = &settings.config {
       Some(path.into())
     } else {
-      let path = if let Some(dir) = settings.config_dir.clone().or(settings.data_dir.clone()) {
+      let dir = if let Some(dir) = settings.config_dir.clone().or(settings.data_dir.clone()) {
         dir
       } else {
         Self::default_data_dir()?
-      }
-      .join("ord.yaml");
+      };
 
-      path.exists().then_some(path)
+      let lord_path = dir.join("lord.yaml");
+      let ord_path = dir.join("ord.yaml");
+
+      if lord_path.exists() {
+        Some(lord_path)
+      } else if ord_path.exists() {
+        Some(ord_path)
+      } else {
+        None
+      }
     };
 
     let config = if let Some(config_path) = config_path {
@@ -112,6 +124,11 @@ impl Settings {
       bitcoin_rpc_url: self.bitcoin_rpc_url.or(source.bitcoin_rpc_url),
       bitcoin_rpc_username: self.bitcoin_rpc_username.or(source.bitcoin_rpc_username),
       chain: self.chain.or(source.chain),
+      // OR merge: once enabled in any layer, later layers cannot disable it.
+      calendar_enabled: self.calendar_enabled || source.calendar_enabled,
+      calendar_listen: self.calendar_listen.or(source.calendar_listen),
+      calendar_uri: self.calendar_uri.or(source.calendar_uri),
+      calendar_url: self.calendar_url.or(source.calendar_url),
       commit_interval: self.commit_interval.or(source.commit_interval),
       config: self.config.or(source.config),
       config_dir: self.config_dir.or(source.config_dir),
@@ -146,6 +163,10 @@ impl Settings {
         .or(options.testnet.then_some(Chain::Testnet))
         .or(options.testnet4.then_some(Chain::Testnet4))
         .or(options.chain_argument),
+      calendar_enabled: false,
+      calendar_listen: None,
+      calendar_uri: None,
+      calendar_url: None,
       commit_interval: options.commit_interval,
       config: options.config,
       config_dir: options.config_dir,
@@ -217,6 +238,10 @@ impl Settings {
       bitcoin_rpc_url: get_string("BITCOIN_RPC_URL"),
       bitcoin_rpc_username: get_string("BITCOIN_RPC_USERNAME"),
       chain: get_chain("CHAIN")?,
+      calendar_enabled: get_bool("CALENDAR_ENABLED"),
+      calendar_listen: get_string("CALENDAR_LISTEN"),
+      calendar_uri: get_string("CALENDAR_URI"),
+      calendar_url: get_string("CALENDAR_URL"),
       commit_interval: get_usize("COMMIT_INTERVAL")?,
       config: get_path("CONFIG"),
       config_dir: get_path("CONFIG_DIR"),
@@ -245,6 +270,10 @@ impl Settings {
       bitcoin_rpc_url: Some(rpc_url.into()),
       bitcoin_rpc_username: None,
       chain: Some(Chain::Regtest),
+      calendar_enabled: false,
+      calendar_listen: None,
+      calendar_uri: None,
+      calendar_url: None,
       commit_interval: None,
       config: None,
       config_dir: None,
@@ -310,6 +339,10 @@ impl Settings {
       ),
       bitcoin_rpc_username: self.bitcoin_rpc_username,
       chain: Some(chain),
+      calendar_enabled: self.calendar_enabled,
+      calendar_listen: self.calendar_listen,
+      calendar_uri: self.calendar_uri,
+      calendar_url: self.calendar_url,
       commit_interval: Some(self.commit_interval.unwrap_or(5000)),
       config: None,
       config_dir: None,
@@ -430,6 +463,48 @@ impl Settings {
 
   pub fn chain(&self) -> Chain {
     self.chain.unwrap()
+  }
+
+  pub fn calendar_enabled(&self) -> bool {
+    self.calendar_enabled
+  }
+
+  pub fn calendar_listen(&self) -> &str {
+    self
+      .calendar_listen
+      .as_deref()
+      .unwrap_or(lord_calendar::DEFAULT_CALENDAR_LISTEN)
+  }
+
+  pub fn calendar_uri(&self) -> &str {
+    self
+      .calendar_uri
+      .as_deref()
+      .unwrap_or(lord_calendar::DEFAULT_CALENDAR_URI)
+  }
+
+  pub fn calendar_url(&self) -> Option<&str> {
+    self.calendar_url.as_deref()
+  }
+
+  /// Full `POST /timestamp` URL from `calendar_url`, active `uri` file, or listen defaults.
+  pub fn calendar_timestamp_url(&self) -> Option<String> {
+    if let Some(url) = &self.calendar_url {
+      return Some(url.clone());
+    }
+    if self.calendar_enabled() || self.calendar_chain() == lord_calendar::Chain::Regtest {
+      let calendar_dir = self.data_dir().join("calendar");
+      if let Ok(Some(url)) = lord_calendar::load_active_timestamp_url(&calendar_dir) {
+        return Some(url);
+      }
+      let listen = self.calendar_listen();
+      return Some(format!("http://{listen}/timestamp"));
+    }
+    None
+  }
+
+  pub fn calendar_chain(&self) -> lord_calendar::Chain {
+    self.chain().into()
   }
 
   pub fn commit_interval(&self) -> usize {
@@ -995,6 +1070,124 @@ mod tests {
   #[test]
   fn example_config_file_is_valid() {
     let _: Settings = serde_yaml::from_reader(File::open("ord.yaml").unwrap()).unwrap();
+    let _: Settings = serde_yaml::from_reader(File::open("lord.yaml").unwrap()).unwrap();
+  }
+
+  #[test]
+  fn config_probe_prefers_lord_yaml_over_ord_yaml() {
+    let tempdir = TempDir::new().unwrap();
+    let dir = tempdir.path();
+
+    fs::write(dir.join("ord.yaml"), "chain: signet").unwrap();
+    fs::write(dir.join("lord.yaml"), "chain: regtest").unwrap();
+
+    let settings = Settings::merge(
+      Options {
+        config_dir: Some(dir.into()),
+        ..default()
+      },
+      Default::default(),
+    )
+    .unwrap();
+
+    assert_eq!(settings.chain(), Chain::Regtest);
+  }
+
+  #[test]
+  fn config_probe_falls_back_to_ord_yaml() {
+    let tempdir = TempDir::new().unwrap();
+    let dir = tempdir.path();
+
+    fs::write(dir.join("ord.yaml"), "chain: signet").unwrap();
+
+    let settings = Settings::merge(
+      Options {
+        config_dir: Some(dir.into()),
+        ..default()
+      },
+      Default::default(),
+    )
+    .unwrap();
+
+    assert_eq!(settings.chain(), Chain::Signet);
+  }
+
+  #[test]
+  fn config_probe_loads_lord_yaml_from_data_dir() {
+    let tempdir = TempDir::new().unwrap();
+    let dir = tempdir.path();
+
+    fs::write(dir.join("lord.yaml"), "chain: testnet4").unwrap();
+
+    let settings = Settings::merge(
+      Options {
+        data_dir: Some(dir.into()),
+        ..default()
+      },
+      Default::default(),
+    )
+    .unwrap();
+
+    assert_eq!(settings.chain(), Chain::Testnet4);
+  }
+
+  #[test]
+  fn config_probe_uses_defaults_when_no_yaml() {
+    let tempdir = TempDir::new().unwrap();
+
+    let settings = Settings::merge(
+      Options {
+        config_dir: Some(tempdir.path().into()),
+        ..default()
+      },
+      Default::default(),
+    )
+    .unwrap();
+
+    assert_eq!(settings.chain(), Chain::Mainnet);
+  }
+
+  #[test]
+  fn config_explicit_path_ignores_lord_yaml_in_same_dir() {
+    let tempdir = TempDir::new().unwrap();
+    let dir = tempdir.path();
+
+    fs::write(dir.join("lord.yaml"), "chain: signet").unwrap();
+    let ord_path = dir.join("ord.yaml");
+    fs::write(&ord_path, "chain: regtest").unwrap();
+
+    let settings = Settings::merge(
+      Options {
+        config: Some(ord_path),
+        config_dir: Some(dir.into()),
+        ..default()
+      },
+      Default::default(),
+    )
+    .unwrap();
+
+    assert_eq!(settings.chain(), Chain::Regtest);
+  }
+
+  #[test]
+  fn config_dir_takes_precedence_over_data_dir() {
+    let config_dir = TempDir::new().unwrap();
+    let data_dir = TempDir::new().unwrap();
+
+    fs::write(config_dir.path().join("lord.yaml"), "chain: signet").unwrap();
+    fs::write(data_dir.path().join("lord.yaml"), "chain: regtest").unwrap();
+
+    let settings = Settings::merge(
+      Options {
+        config_dir: Some(config_dir.path().into()),
+        data_dir: Some(data_dir.path().into()),
+        ..default()
+      },
+      Default::default(),
+    )
+    .unwrap();
+
+    assert_eq!(settings.chain(), Chain::Signet);
   }
 
   #[test]
@@ -1006,6 +1199,10 @@ mod tests {
       ("BITCOIN_RPC_URL", "url"),
       ("BITCOIN_RPC_USERNAME", "bitcoin username"),
       ("CHAIN", "signet"),
+      ("CALENDAR_ENABLED", "1"),
+      ("CALENDAR_LISTEN", "127.0.0.1:14788"),
+      ("CALENDAR_URI", "http://127.0.0.1:14788"),
+      ("CALENDAR_URL", "http://calendar.example/timestamp"),
       ("COMMIT_INTERVAL", "1"),
       ("CONFIG", "config"),
       ("CONFIG_DIR", "config dir"),
@@ -1038,6 +1235,10 @@ mod tests {
         bitcoin_rpc_url: Some("url".into()),
         bitcoin_rpc_username: Some("bitcoin username".into()),
         chain: Some(Chain::Signet),
+        calendar_enabled: true,
+        calendar_listen: Some("127.0.0.1:14788".into()),
+        calendar_uri: Some("http://127.0.0.1:14788".into()),
+        calendar_url: Some("http://calendar.example/timestamp".into()),
         commit_interval: Some(1),
         savepoint_interval: Some(10),
         max_savepoints: Some(2),
@@ -1096,6 +1297,10 @@ mod tests {
         bitcoin_rpc_url: Some("url".into()),
         bitcoin_rpc_username: Some("bitcoin username".into()),
         chain: Some(Chain::Signet),
+        calendar_enabled: false,
+        calendar_listen: None,
+        calendar_uri: None,
+        calendar_url: None,
         commit_interval: Some(1),
         savepoint_interval: Some(10),
         max_savepoints: Some(2),

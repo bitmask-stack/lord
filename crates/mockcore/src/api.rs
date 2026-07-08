@@ -117,6 +117,9 @@ pub trait Api {
     include_watchonly: Option<bool>,
   ) -> Result<Value, jsonrpc_core::Error>;
 
+  #[rpc(name = "getindexinfo")]
+  fn get_index_info(&self) -> Result<Value, jsonrpc_core::Error>;
+
   #[rpc(name = "getrawtransaction")]
   fn get_raw_transaction(
     &self,

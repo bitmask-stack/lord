@@ -11,6 +11,7 @@ pub(super) enum ServerError {
   Forbidden(String),
   Gone(String),
   NotFound(String),
+  Unavailable(String),
 }
 
 pub(super) type ServerResult<T = Response> = Result<T, ServerError>;
@@ -55,6 +56,12 @@ impl IntoResponse for ServerError {
         .into_response(),
       Self::NotFound(message) => (
         StatusCode::NOT_FOUND,
+        [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+        message,
+      )
+        .into_response(),
+      Self::Unavailable(message) => (
+        StatusCode::SERVICE_UNAVAILABLE,
         [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
         message,
       )

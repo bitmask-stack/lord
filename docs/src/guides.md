@@ -1,5 +1,6 @@
-Ordinal Theory Guides
-=====================
+Lord Guides
+===========
 
-See the table of contents for a list of guides, including a guide to the
-explorer, a guide for sat hunters, and a guide to inscriptions.
+See the table of contents for operator guides (wallet, commitments, operator
+runbook, settings) and legacy ordinal-theory reference material retained from
+upstream ord documentation.

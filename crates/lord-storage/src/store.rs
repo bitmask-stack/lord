@@ -3,14 +3,14 @@ use std::path::{Path, PathBuf};
 use crate::breccia_timestamps::load_breccia_timestamps;
 use crate::meta::{CommitmentMeta, CommitmentMetaV1, CommitmentMetaV2};
 use crate::paths::StoragePaths;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, ensure};
 use heed3::{Database, RoTxn, RwTxn, byteorder::BigEndian, types::Bytes, types::U64};
 use lord_db::{LordEnv, LordEnvOptions};
 
 pub const COMMITMENT_META: &str = "COMMITMENT_META";
 pub const COMMITMENT_ORDER: &str = "COMMITMENT_ORDER";
 pub const STATISTIC_TO_COUNT: &str = "STATISTIC_TO_COUNT";
-pub const SCHEMA_VERSION: u64 = 3;
+pub const SCHEMA_VERSION: u64 = 4;
 
 #[derive(Copy, Clone)]
 enum Statistic {
@@ -28,6 +28,64 @@ type CommitmentDb = Database<Bytes, lord_db::RkyvCodec<CommitmentMeta>>;
 type CommitmentOrderDb = Database<Bytes, Bytes>;
 
 const STORAGE_MAP_SIZE: usize = 64 * 1024 * 1024;
+const MAX_OTS_ORDER_PATH_LEN: usize = 254;
+
+/// LMDB rejects zero-length keys. Encode logical paths with an order-preserving
+/// variable-length form: each path byte is stored as `byte + 1`, terminated by
+/// `0x00`. Empty logical paths map to `[0x00]`; the no-attestation sentinel is
+/// stored raw so LMDB iteration order matches logical lex order.
+fn encode_order_key_for_lmdb(key: &[u8]) -> Result<Vec<u8>> {
+  use crate::ots_order::NO_ATTESTATION_SENTINEL;
+
+  if key == NO_ATTESTATION_SENTINEL {
+    return Ok(NO_ATTESTATION_SENTINEL.to_vec());
+  }
+  ensure!(
+    key.len() <= MAX_OTS_ORDER_PATH_LEN,
+    "OTS order key path exceeds {MAX_OTS_ORDER_PATH_LEN} forks"
+  );
+  if key.is_empty() {
+    return Ok(vec![0x00]);
+  }
+  let mut encoded = Vec::with_capacity(key.len() + 1);
+  for &byte in key {
+    encoded.push(
+      byte
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("OTS order key byte out of range for LMDB encoding"))?,
+    );
+  }
+  encoded.push(0x00);
+  Ok(encoded)
+}
+
+fn decode_order_key_from_lmdb(encoded: &[u8]) -> Result<Vec<u8>> {
+  use crate::ots_order::NO_ATTESTATION_SENTINEL;
+
+  if encoded == NO_ATTESTATION_SENTINEL {
+    return Ok(NO_ATTESTATION_SENTINEL.to_vec());
+  }
+  if encoded == [0x00] {
+    return Ok(Vec::new());
+  }
+  let Some(&terminator) = encoded.last() else {
+    anyhow::bail!("COMMITMENT_ORDER key is empty");
+  };
+  ensure!(
+    terminator == 0x00,
+    "COMMITMENT_ORDER key missing terminator byte"
+  );
+  let path_bytes = &encoded[..encoded.len() - 1];
+  let mut path = Vec::with_capacity(path_bytes.len());
+  for &byte in path_bytes {
+    ensure!(
+      byte != 0,
+      "COMMITMENT_ORDER key contains invalid zero byte before terminator"
+    );
+    path.push(byte - 1);
+  }
+  Ok(path)
+}
 
 /// heed3 LMDB environment for commitment metadata at `{data_dir}/storage/`.
 pub struct StorageStore {
@@ -140,7 +198,8 @@ impl StorageStore {
     order_key: &[u8],
     bao_root: &[u8; 32],
   ) -> Result<()> {
-    if let Some(existing) = self.commitment_order.get(wtxn, order_key)?
+    let encoded_key = encode_order_key_for_lmdb(order_key)?;
+    if let Some(existing) = self.commitment_order.get(wtxn, &encoded_key)?
       && existing != bao_root.as_slice()
     {
       anyhow::bail!(
@@ -151,13 +210,14 @@ impl StorageStore {
     }
     self
       .commitment_order
-      .put(wtxn, order_key, bao_root.as_slice())
+      .put(wtxn, &encoded_key, bao_root.as_slice())
       .context("failed to store COMMITMENT_ORDER entry")?;
     Ok(())
   }
 
   pub fn delete_commitment_order(&self, wtxn: &mut RwTxn<'_>, order_key: &[u8]) -> Result<()> {
-    match self.commitment_order.delete(wtxn, order_key)? {
+    let encoded_key = encode_order_key_for_lmdb(order_key)?;
+    match self.commitment_order.delete(wtxn, &encoded_key)? {
       true => Ok(()),
       false => Ok(()),
     }
@@ -167,11 +227,13 @@ impl StorageStore {
     let mut entries = Vec::new();
     let iter = self.commitment_order.iter(rtxn)?;
     for result in iter {
-      let (order_key, bao_root_bytes) = result?;
+      let (encoded_key, bao_root_bytes) = result?;
+      let order_key =
+        decode_order_key_from_lmdb(encoded_key).context("failed to decode COMMITMENT_ORDER key")?;
       let bao_root: [u8; 32] = bao_root_bytes
         .try_into()
         .map_err(|_| anyhow!("invalid bao root length in COMMITMENT_ORDER"))?;
-      entries.push((order_key.to_vec(), bao_root));
+      entries.push((order_key, bao_root));
     }
     Ok(entries)
   }
@@ -212,6 +274,10 @@ impl StorageStore {
         }
         if schema_version == 2 && SCHEMA_VERSION >= 3 {
           self.migrate_v2_to_v3()?;
+          return self.ensure_schema_version();
+        }
+        if schema_version == 3 && SCHEMA_VERSION >= 4 {
+          self.migrate_v3_to_v4()?;
           return self.ensure_schema_version();
         }
         anyhow::bail!(
@@ -257,6 +323,158 @@ impl StorageStore {
     }
     self.set_statistic(&mut wtxn, Statistic::Schema.key(), SCHEMA_VERSION)?;
     wtxn.commit()?;
+    Ok(())
+  }
+
+  fn migrate_v3_to_v4(&self) -> Result<()> {
+    use crate::ots_order::order_key_from_proof_bytes;
+
+    enum V4MigrationAction {
+      Rekey {
+        bao_root: [u8; 32],
+        old_key: Vec<u8>,
+        new_key: Vec<u8>,
+      },
+      ClearStale {
+        bao_root: [u8; 32],
+        old_key: Vec<u8>,
+      },
+    }
+
+    let data_dir = self
+      .path
+      .parent()
+      .context("storage path must have a parent data directory")?;
+
+    let rtxn = self.begin_read().context("v4 migration read txn")?;
+    let mut actions = Vec::new();
+    let iter = self
+      .commitment_meta
+      .iter(&rtxn)
+      .context("v4 migration commitment_meta iter")?;
+    for result in iter {
+      let (bao_root_bytes, archived) = result.context("v4 migration commitment_meta entry")?;
+      let bao_root: [u8; 32] = bao_root_bytes
+        .try_into()
+        .map_err(|_| anyhow!("invalid bao root key length during migration"))?;
+      let meta = rkyv::deserialize::<CommitmentMeta, rkyv::rancor::Error>(archived)
+        .context("failed to deserialize CommitmentMeta during v4 migration")?;
+      let Some(ots_proof_path) = meta.ots_proof_path.as_deref() else {
+        continue;
+      };
+      let old_key = meta.ots_order_key.clone().unwrap_or_default();
+      let proof_path = data_dir.join(ots_proof_path);
+      let proof_bytes = match std::fs::read(&proof_path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+          log::warn!(
+            "v4 migration: skipping {}: failed to read OTS proof `{}`: {err}",
+            hex::encode(bao_root),
+            proof_path.display()
+          );
+          actions.push(V4MigrationAction::ClearStale { bao_root, old_key });
+          continue;
+        }
+      };
+      match order_key_from_proof_bytes(&proof_bytes) {
+        Ok(new_key) => actions.push(V4MigrationAction::Rekey {
+          bao_root,
+          old_key,
+          new_key: new_key.as_bytes().to_vec(),
+        }),
+        Err(err) => {
+          log::warn!(
+            "v4 migration: skipping {}: corrupt OTS proof `{}`: {err}",
+            hex::encode(bao_root),
+            proof_path.display()
+          );
+          actions.push(V4MigrationAction::ClearStale { bao_root, old_key });
+        }
+      }
+    }
+    drop(rtxn);
+
+    let mut wtxn = self.begin_write().context("v4 migration write txn")?;
+    for action in actions {
+      match action {
+        V4MigrationAction::Rekey {
+          bao_root,
+          old_key,
+          new_key,
+        } => {
+          let bao_root_hex = hex::encode(bao_root);
+          let Some(mut meta) = self
+            .get_commitment(&wtxn, &bao_root)
+            .with_context(|| format!("v4 migration load meta for {bao_root_hex}"))?
+          else {
+            continue;
+          };
+          if let Some(current) = meta.ots_order_key.as_deref()
+            && current != old_key.as_slice()
+          {
+            anyhow::bail!(
+              "COMMITMENT_META ots_order_key changed during v4 migration for {bao_root_hex}"
+            );
+          }
+          if meta.ots_order_key.as_deref() != Some(new_key.as_slice()) {
+            meta.ots_order_key = Some(new_key.clone());
+            self
+              .put_commitment(&mut wtxn, &meta)
+              .with_context(|| format!("v4 migration put meta for {bao_root_hex}"))?;
+          }
+          self.delete_stored_commitment_order_keys(&mut wtxn, &old_key)?;
+          self
+            .put_commitment_order(&mut wtxn, &new_key, &bao_root)
+            .with_context(|| format!("v4 migration put order key for {bao_root_hex}"))?;
+        }
+        V4MigrationAction::ClearStale { bao_root, old_key } => {
+          let bao_root_hex = hex::encode(bao_root);
+          let Some(mut meta) = self
+            .get_commitment(&wtxn, &bao_root)
+            .with_context(|| format!("v4 migration load meta for {bao_root_hex}"))?
+          else {
+            continue;
+          };
+          if meta.ots_order_key.is_some() {
+            meta.ots_order_key = None;
+            self
+              .put_commitment(&mut wtxn, &meta)
+              .with_context(|| format!("v4 migration clear stale meta for {bao_root_hex}"))?;
+          }
+          self.delete_stored_commitment_order_keys(&mut wtxn, &old_key)?;
+        }
+      }
+    }
+    self
+      .set_statistic(&mut wtxn, Statistic::Schema.key(), SCHEMA_VERSION)
+      .context("v4 migration set schema version")?;
+    wtxn.commit().context("v4 migration commit")?;
+    Ok(())
+  }
+
+  /// Delete a logical order key from `COMMITMENT_ORDER`, including legacy v3/v4
+  /// encodings that may still be on disk from earlier schema-4 builds.
+  fn delete_stored_commitment_order_keys(
+    &self,
+    wtxn: &mut RwTxn<'_>,
+    order_key: &[u8],
+  ) -> Result<()> {
+    if order_key.is_empty() {
+      return Ok(());
+    }
+    if let Ok(encoded) = encode_order_key_for_lmdb(order_key) {
+      let _ = self.commitment_order.delete(wtxn, &encoded)?;
+    }
+    // Legacy schema-4 length-prefixed keys and pre-v4 raw LMDB keys.
+    let mut legacy_length_prefixed = Vec::with_capacity(1 + order_key.len());
+    if order_key.len() <= MAX_OTS_ORDER_PATH_LEN {
+      legacy_length_prefixed.push(u8::try_from(order_key.len()).expect("path length fits"));
+      legacy_length_prefixed.extend_from_slice(order_key);
+      let _ = self
+        .commitment_order
+        .delete(wtxn, legacy_length_prefixed.as_slice())?;
+    }
+    let _ = self.commitment_order.delete(wtxn, order_key)?;
     Ok(())
   }
 
@@ -366,11 +584,11 @@ mod tests {
   }
 
   #[test]
-  fn initializes_schema_version_three() {
+  fn initializes_schema_version_four() {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let store = StorageStore::open(dir.path()).expect("open");
     let rtxn = store.begin_read().expect("read");
-    assert_eq!(store.statistic(&rtxn, 0).expect("schema"), 3);
+    assert_eq!(store.statistic(&rtxn, 0).expect("schema"), 4);
   }
 
   #[test]
@@ -542,6 +760,113 @@ mod tests {
   }
 
   #[test]
+  fn migrates_schema_version_three_to_four_rekeys_from_ots_files() {
+    use crate::ots_order::order_key_from_proof_bytes;
+    use opentimestamps::{
+      attestation::Attestation,
+      ser::{DetachedTimestampFile, DigestType},
+      timestamp::{Step, StepData, Timestamp},
+    };
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let bao_root = [11u8; 32];
+    let attestation = Step {
+      data: StepData::Attestation(Attestation::Pending {
+        uri: "https://localhost.stub/opentimestamps".into(),
+      }),
+      output: vec![1, 2, 3],
+      next: vec![],
+    };
+    let proof = {
+      let timestamp = Timestamp {
+        start_digest: vec![9u8; 32],
+        first_step: Step {
+          data: StepData::Fork,
+          output: vec![9],
+          next: vec![attestation],
+        },
+      };
+      let file = DetachedTimestampFile {
+        digest_type: DigestType::Sha256,
+        timestamp,
+      };
+      let mut bytes = Vec::new();
+      file.to_writer(&mut bytes).expect("serialize");
+      bytes
+    };
+    let new_key = order_key_from_proof_bytes(&proof).expect("derive key from proof");
+    let old_key = vec![0, 0, 0, 0, 0, 0, 0, 1];
+
+    std::fs::create_dir_all(dir.path().join("ots")).expect("ots dir");
+    std::fs::write(
+      dir
+        .path()
+        .join("ots")
+        .join(format!("{}.ots", hex::encode(bao_root))),
+      &proof,
+    )
+    .expect("write proof");
+
+    {
+      let store = StorageStore::open(dir.path()).expect("open");
+      let meta = CommitmentMeta {
+        bao_root,
+        carbonado_path: "x.c12".into(),
+        format: 12,
+        visibility: crate::meta::Visibility::Public,
+        layout: Layout::Inboard,
+        filepack_fp: None,
+        created_at: 1,
+        ots_proof_path: Some(format!("ots/{}.ots", hex::encode(bao_root))),
+        ots_order_key: Some(old_key.clone()),
+        timestamped_at: Some(1),
+      };
+      let mut wtxn = store.begin_write().expect("write");
+      store.put_commitment(&mut wtxn, &meta).expect("put");
+      store
+        .put_commitment_order(&mut wtxn, &old_key, &bao_root)
+        .expect("order");
+      store
+        .set_statistic(&mut wtxn, Statistic::Schema.key(), 3)
+        .expect("set v3");
+      wtxn.commit().expect("commit");
+    }
+
+    let store = StorageStore::open(dir.path()).expect("reopen");
+    let rtxn = store.begin_read().expect("read");
+    assert_eq!(store.schema_version(&rtxn).expect("schema"), SCHEMA_VERSION);
+    let stored = store
+      .get_commitment(&rtxn, &bao_root)
+      .expect("get")
+      .expect("meta");
+    assert_eq!(stored.ots_order_key.as_deref(), Some(new_key.as_bytes()));
+    let ordered = store.list_commitments_by_order(&rtxn).expect("list");
+    assert_eq!(ordered.len(), 1);
+    assert_eq!(ordered[0].0, new_key.as_bytes().to_vec());
+    assert_eq!(ordered[0].1, bao_root);
+  }
+
+  #[test]
+  fn stores_empty_and_nonempty_order_keys() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let store = StorageStore::open(dir.path()).expect("open");
+    let mut wtxn = store.begin_write().expect("write");
+    store
+      .put_commitment_order(&mut wtxn, &[0], &[1u8; 32])
+      .expect("path [0]");
+    store
+      .put_commitment_order(&mut wtxn, &[], &[2u8; 32])
+      .expect("empty path");
+    wtxn.commit().expect("commit");
+
+    let rtxn = store.begin_read().expect("read");
+    let ordered = store.list_commitments_by_order(&rtxn).expect("list");
+    assert_eq!(ordered.len(), 2);
+    assert_eq!(ordered[0].0, Vec::<u8>::new());
+    assert_eq!(ordered[1].0, vec![0]);
+  }
+
+  #[test]
   fn stores_commitment_order_entries() {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let store = StorageStore::open(dir.path()).expect("open");
@@ -559,6 +884,143 @@ mod tests {
     assert_eq!(ordered.len(), 2);
     assert_eq!(ordered[0].0, vec![1, 2]);
     assert_eq!(ordered[1].0, vec![1, 3]);
+  }
+
+  #[test]
+  fn list_commitments_by_order_preserves_logical_lex_order() {
+    use crate::ots_order::NO_ATTESTATION_SENTINEL;
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let store = StorageStore::open(dir.path()).expect("open");
+    let mut wtxn = store.begin_write().expect("write");
+    store
+      .put_commitment_order(&mut wtxn, &[1], &[2u8; 32])
+      .expect("[1]");
+    store
+      .put_commitment_order(&mut wtxn, &[0, 0], &[1u8; 32])
+      .expect("[0,0]");
+    store
+      .put_commitment_order(&mut wtxn, &[2], &[4u8; 32])
+      .expect("[2]");
+    store
+      .put_commitment_order(&mut wtxn, &[1, 0], &[3u8; 32])
+      .expect("[1,0]");
+    store
+      .put_commitment_order(&mut wtxn, &NO_ATTESTATION_SENTINEL, &[6u8; 32])
+      .expect("sentinel");
+    store
+      .put_commitment_order(&mut wtxn, &[0; 9], &[5u8; 32])
+      .expect("long path");
+    wtxn.commit().expect("commit");
+
+    let rtxn = store.begin_read().expect("read");
+    let ordered = store.list_commitments_by_order(&rtxn).expect("list");
+    let keys: Vec<_> = ordered.into_iter().map(|(key, _)| key).collect();
+    assert_eq!(
+      keys,
+      vec![
+        vec![0, 0],
+        vec![0; 9],
+        vec![1],
+        vec![1, 0],
+        vec![2],
+        NO_ATTESTATION_SENTINEL.to_vec(),
+      ]
+    );
+  }
+
+  #[test]
+  fn migrates_schema_version_three_to_four_skips_corrupt_ots_file() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let bao_root = [33u8; 32];
+    let old_key = vec![0, 0, 0, 0, 0, 0, 0, 3];
+    std::fs::create_dir_all(dir.path().join("ots")).expect("ots dir");
+    std::fs::write(dir.path().join("ots/corrupt.ots"), b"not-an-ots-proof")
+      .expect("write corrupt proof");
+
+    {
+      let store = StorageStore::open(dir.path()).expect("open");
+      let meta = CommitmentMeta {
+        bao_root,
+        carbonado_path: "corrupt.c12".into(),
+        format: 12,
+        visibility: crate::meta::Visibility::Public,
+        layout: Layout::Inboard,
+        filepack_fp: None,
+        created_at: 1,
+        ots_proof_path: Some("ots/corrupt.ots".into()),
+        ots_order_key: Some(old_key.clone()),
+        timestamped_at: Some(1),
+      };
+      let mut wtxn = store.begin_write().expect("write");
+      store.put_commitment(&mut wtxn, &meta).expect("put");
+      store
+        .put_commitment_order(&mut wtxn, &old_key, &bao_root)
+        .expect("order");
+      store
+        .set_statistic(&mut wtxn, Statistic::Schema.key(), 3)
+        .expect("set v3");
+      wtxn.commit().expect("commit");
+    }
+
+    let store = StorageStore::open(dir.path()).expect("reopen after corrupt proof");
+    let rtxn = store.begin_read().expect("read");
+    assert_eq!(store.schema_version(&rtxn).expect("schema"), SCHEMA_VERSION);
+    let stored = store
+      .get_commitment(&rtxn, &bao_root)
+      .expect("get")
+      .expect("meta");
+    assert!(stored.ots_order_key.is_none());
+    assert_eq!(
+      store.list_commitments_by_order(&rtxn).expect("list").len(),
+      0
+    );
+  }
+
+  #[test]
+  fn migrates_schema_version_three_to_four_skips_missing_ots_file() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let bao_root = [22u8; 32];
+    let old_key = vec![0, 0, 0, 0, 0, 0, 0, 2];
+
+    {
+      let store = StorageStore::open(dir.path()).expect("open");
+      let meta = CommitmentMeta {
+        bao_root,
+        carbonado_path: "missing.c12".into(),
+        format: 12,
+        visibility: crate::meta::Visibility::Public,
+        layout: Layout::Inboard,
+        filepack_fp: None,
+        created_at: 1,
+        ots_proof_path: Some("ots/missing.ots".into()),
+        ots_order_key: Some(old_key.clone()),
+        timestamped_at: Some(1),
+      };
+      let mut wtxn = store.begin_write().expect("write");
+      store.put_commitment(&mut wtxn, &meta).expect("put");
+      store
+        .put_commitment_order(&mut wtxn, &old_key, &bao_root)
+        .expect("order");
+      store
+        .set_statistic(&mut wtxn, Statistic::Schema.key(), 3)
+        .expect("set v3");
+      wtxn.commit().expect("commit");
+    }
+
+    let store = StorageStore::open(dir.path()).expect("reopen after missing proof");
+    let rtxn = store.begin_read().expect("read");
+    assert_eq!(store.schema_version(&rtxn).expect("schema"), SCHEMA_VERSION);
+    let stored = store
+      .get_commitment(&rtxn, &bao_root)
+      .expect("get")
+      .expect("meta");
+    assert!(stored.ots_proof_path.is_some());
+    assert!(stored.ots_order_key.is_none());
+    assert_eq!(
+      store.list_commitments_by_order(&rtxn).expect("list").len(),
+      0
+    );
   }
 
   #[test]

@@ -12,6 +12,7 @@ pub(crate) struct CommitmentHtml {
   pub(crate) ots_order_key: Option<String>,
   pub(crate) timestamped_at: Option<u64>,
   pub(crate) timestamped: bool,
+  pub(crate) ots_attestation: Option<lord_commit::AttestationVerifyStatusJson>,
 }
 
 impl Display for CommitmentHtml {
@@ -37,6 +38,37 @@ impl Display for CommitmentHtml {
       }
       if let Some(path) = &self.ots_proof_path {
         writeln!(f, "<dt>proof</dt><dd>{path}</dd>")?;
+      }
+      if let Some(attestation) = &self.ots_attestation {
+        match attestation {
+          lord_commit::AttestationVerifyStatusJson::Confirmed {
+            height,
+            confirmations,
+          } => {
+            writeln!(f, "<dt>attestation</dt><dd>confirmed</dd>")?;
+            writeln!(f, "<dt>block height</dt><dd>{height}</dd>")?;
+            if let Some(confirmations) = confirmations {
+              writeln!(f, "<dt>confirmations</dt><dd>{confirmations}</dd>")?;
+            }
+            writeln!(
+              f,
+              "<p><small>1-conf / best-chain view; reorgs can invalidate attestation.</small></p>"
+            )?;
+          }
+          lord_commit::AttestationVerifyStatusJson::Pending => {
+            writeln!(f, "<dt>attestation</dt><dd>pending</dd>")?;
+          }
+          lord_commit::AttestationVerifyStatusJson::Failed { reason } => {
+            writeln!(f, "<dt>attestation</dt><dd>failed ({reason})</dd>")?;
+          }
+          lord_commit::AttestationVerifyStatusJson::Unavailable { reason } => {
+            writeln!(f, "<dt>attestation</dt><dd>unavailable ({reason})</dd>")?;
+          }
+          lord_commit::AttestationVerifyStatusJson::Unknown => {
+            writeln!(f, "<dt>attestation</dt><dd>unknown</dd>")?;
+          }
+          lord_commit::AttestationVerifyStatusJson::None => {}
+        }
       }
     } else {
       writeln!(f, "<dt>OTS</dt><dd>not timestamped</dd>")?;

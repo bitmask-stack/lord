@@ -76,6 +76,59 @@ impl Spawn {
   }
 }
 
+/// Keeps a spawned `lord` child alive for the duration of a test and kills it on drop.
+pub(crate) struct BackgroundProcess {
+  child: Child,
+  stderr: Option<std::process::ChildStderr>,
+  _tempdir: Arc<TempDir>,
+}
+
+impl BackgroundProcess {
+  /// If the child has exited, returns exit status and captured stderr for diagnostics.
+  pub(crate) fn child_failure_message(&mut self) -> Option<String> {
+    let status = self.child.try_wait().ok()??;
+    let mut stderr = String::new();
+    if let Some(mut pipe) = self.stderr.take() {
+      let _ = pipe.read_to_string(&mut stderr);
+    }
+    Some(format!(
+      "calendar process exited with {status}{}",
+      if stderr.is_empty() {
+        String::new()
+      } else {
+        format!(", stderr:\n{stderr}")
+      }
+    ))
+  }
+}
+
+impl CommandBuilder {
+  #[track_caller]
+  pub(crate) fn spawn_background(self) -> BackgroundProcess {
+    let tempdir = self.tempdir.clone();
+    let stdin = self.stdin.clone();
+    let mut command = self.command();
+    command.stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let stderr = child.stderr.take();
+    if !stdin.is_empty() {
+      child.stdin.as_mut().unwrap().write_all(&stdin).unwrap();
+    }
+    BackgroundProcess {
+      child,
+      stderr,
+      _tempdir: tempdir,
+    }
+  }
+}
+
+impl Drop for BackgroundProcess {
+  fn drop(&mut self) {
+    let _ = self.child.kill();
+    let _ = self.child.wait();
+  }
+}
+
 pub(crate) struct CommandBuilder {
   args: Vec<String>,
   core_cookie_file: Option<PathBuf>,

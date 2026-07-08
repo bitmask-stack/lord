@@ -104,6 +104,7 @@ use self::test::*;
 pub mod api;
 pub mod arguments;
 mod blocktime;
+mod calendar;
 pub mod chain;
 pub mod decimal;
 mod deserialize_from_str;

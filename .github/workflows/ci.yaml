@@ -4,9 +4,11 @@ on:
   push:
     branches:
     - master
+    - lord
   pull_request:
     branches:
     - master
+    - lord
 
 defaults:
   run:
@@ -107,6 +109,9 @@ jobs:
         toolchain: stable
 
     - uses: Swatinem/rust-cache@v2
+
+    - name: Smoke (calendar + commit dry-run)
+      run: cargo test --test integration smoke:: -- --nocapture
 
     - name: Test
       run: cargo test --all

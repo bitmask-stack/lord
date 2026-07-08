@@ -24,6 +24,8 @@ Lord stores the cardinal block index as a heed3 LMDB environment per chain:
   ots/                     # detached OpenTimestamps proofs ({bao_root_hex}.ots)
   breccia/                 # append-only global commitment log
     global.breccia
+  calendar/                # embedded OpenTimestamps calendar state
+    state.json
   {chain}/                 # signet, regtest, testnet3, testnet4
     index/                 # heed3 LMDB env root (cardinal index)
       data.mdb
@@ -41,6 +43,8 @@ Lord stores the cardinal block index as a heed3 LMDB environment per chain:
     storage/
     ots/
     breccia/
+    calendar/
+      state.json
 ```
 
 The default index path is `{data_dir}/index` on mainnet and
@@ -70,7 +74,7 @@ Lord uses **two independent schema version namespaces**:
 |-----------|----------|---------|
 | **Lord index schema** | heed3 `STATISTIC_TO_COUNT`, key `0` | Cardinal index layout version (currently **35**) |
 | **Lord wallet schema** | heed3 `STATISTIC_TO_COUNT`, key `0` in `wallets/<name>/` | Wallet metadata layout version (currently **2**) |
-| **Lord storage schema** | heed3 `STATISTIC_TO_COUNT`, key `0` in `storage/` | Commitment metadata layout version (currently **3**) |
+| **Lord storage schema** | heed3 `STATISTIC_TO_COUNT`, key `0` in `storage/` | Commitment metadata layout version (currently **4**) |
 | **lord-db `SCHEMA_VERSION`** | heed3 `metadata` database, key `schema_version` | Gates `LordEnv` named-database layouts and rkyv record migrations |
 
 These must not be conflated. Bumping `lord-db::SCHEMA_VERSION` rejects incompatible LMDB environments with an actionable error; it does **not** validate or migrate the cardinal index statistic at key `0`.
@@ -109,7 +113,7 @@ User-facing inscription and rune functionality has been removed from the `lord` 
 **Removed**
 
 - CLI: `balances`, `decode`, `runes`, `teleburn`; wallet `batch`, `burn`, `inscribe`, `inscriptions`, `mint`, `offer`, `pending`, `resume`, `runics`, `split`
-- Server routes: `/inscription*`, `/inscriptions*`, `/rune*`, `/runes*`, `/collections*`, `/galleries*`, `/preview*`, `/children*`, `/parents*`, `/item*`, `/decode*`, `/content*`, `/metadata*`, `/feed.xml`, recursive inscription endpoints
+- Server routes: `/inscription*`, `/inscriptions*`, `/rune*`, `/runes*`, `/collections*`, `/galleries*`, `/preview*`, `/children*`, `/parents*`, `/item*`, `/decode*`, `/content/{inscription_id}`, `/metadata*`, `/feed.xml`, recursive inscription endpoints (see [PR3 explorer routes](#explorer-routes) for `/content/{bao_root}` commitment content)
 - `crates/ordinals` rune/runestone modules (sat types + `varint` kept)
 - HTML templates and Rust template modules for inscription/rune UI
 - Integration tests for inscriptions, runes, batch, offers, etc.
@@ -120,6 +124,20 @@ User-facing inscription and rune functionality has been removed from the `lord` 
 - Sat explorer routes (`/sat/:sat`, `/ordinal/:sat`, `/rare.txt`, `/satpoint/:satpoint`, `/r/sat/*`) require building lord with `--features sats` (PR1d); default builds return **410 Gone**
 - Wallet: `create`, `dump`, `receive`, `restore`, `sign`, `transactions`, `addresses`, `send` (BTC), `balance`, `cardinals`, `outputs`, `sweep`, `label`; `wallet sats` requires `--features sats` (PR1d)
 - `sats` feature declaration (optional; `index_sats` settings flag behavior preserved)
+
+### bitcoind `txindex` profiles
+
+Lord probes `getindexinfo` at index startup (`src/index/txindex.rs`):
+
+| Profile | bitcoind | `txindex=1` synced | lord flags | behavior |
+|---------|----------|-------------------|------------|----------|
+| Storage / OTS | any | not required | none | `storage`, `filepack`, `commit` work |
+| Reduced explorer | any | disabled / syncing | none | blocks, outputs, addresses (unspent), `/status`; `/tx` returns **503** |
+| Full explorer | Core 28+ | `synced: true` | optional | `/tx` and spent-output metadata via `getrawtransaction` |
+| Address / sat index | Core 28+ | `synced: true` | `--index-addresses` / `--index-sats` | fails fast at startup if txindex unavailable |
+
+`/status` reports `txindex` (`available` \| `syncing` \| `disabled` \| `unknown`) and
+`txindex_available` (boolean). Startup logs a warning in reduced mode.
 
 PR1b (complete): index migration redb → heed3+rkyv
 --------------------------------------------------
@@ -148,6 +166,7 @@ Carbonado blob storage, filepack manifests, and commitment metadata live in
 lord storage encode <path> [--format 12|c12] [--layout inboard|outboard] [--master-key-hex HEX]
 lord storage verify <bao_root> [--sample-rate N] [--master-key-hex HEX]
 lord filepack create <dir> [--format 12|c12] [--layout inboard|outboard] [--master-key-hex HEX] [--filepack-compat]
+lord filepack verify <fingerprint> [--filepack-compat]
 lord-pack create <dir> [--format 12|c12] [--layout inboard|outboard] [--data-dir DIR] [--master-key-hex HEX] [--filepack-compat]
 ```
 
@@ -172,7 +191,7 @@ index and wallet stores. It holds:
 
 | Database | Key | Value | Notes |
 |----------|-----|-------|-------|
-| `STATISTIC_TO_COUNT` | `u64` BE | `u64` BE | Storage schema version at key `0` (currently **3**) |
+| `STATISTIC_TO_COUNT` | `u64` BE | `u64` BE | Storage schema version at key `0` (currently **4**) |
 | `COMMITMENT_META` | `bao_root` (32 bytes) | `CommitmentMeta` (rkyv) | Metadata pointers only |
 | `COMMITMENT_ORDER` | `ots_order_key` (bytes) | `bao_root` (32 bytes) | Sorted explorer/CLI list index |
 
@@ -200,7 +219,7 @@ atomically (temp + rename after LMDB commit).
 | `filepack_fp` | `Option<String>` | Set by `lord filepack create` (single-valued; see below) |
 | `created_at` | `u64` | Unix timestamp |
 | `ots_proof_path` | `Option<String>` | Relative path under `{data_dir}/ots/` (PR3) |
-| `ots_order_key` | `Option<Vec<u8>>` | BFS OTS merkle order key (PR3) |
+| `ots_order_key` | `Option<Vec<u8>>` | Merkle-path OTS order key |
 | `timestamped_at` | `Option<u64>` | Unix timestamp when OTS proof was written (PR3 schema v3) |
 
 `filepack_fp` records **at most one** filepack membership per commitment. If a
@@ -311,6 +330,7 @@ even = public. Default encode format is **c12** / **12** (Bao + Zfec, public).
 cargo build --release
 cargo test -p lord-storage --lib
 cargo test -p lord --lib
+cargo test --test integration smoke::
 cargo test --test integration storage
 cargo test -p lord-db --lib
 cargo fmt --check
@@ -329,9 +349,29 @@ routes live in `crates/lord-commit` and are wired into the `lord` binary.
 
 ```text
 lord commit timestamp <bao_root> [--dry-run] [--force] [--calendar-url URL]
-lord commit verify <bao_root>
+lord commit upgrade <bao_root> [--calendar-url URL]
+lord commit verify <bao_root> [--digest-only] [--full]
 lord commit list
+lord calendar url
+lord calendar doctor
+lord calendar serve [--listen ADDR]
 ```
+
+Embedded calendar settings in `lord.yaml`:
+
+- `calendar_enabled: true` — `lord server` spawns the Rust calendar (HTTP + anchor worker)
+- `calendar_listen` — default `127.0.0.1:14788`
+- `calendar_uri` — public URI stamped into pending proofs (default `http://127.0.0.1:14788`)
+- `calendar_url` — optional override for `lord commit timestamp` HTTP target
+
+`calendar_url` may also be set in `lord.yaml` (or `ord.yaml` when used as `--config`).
+When `calendar_enabled: true` or on **regtest**, the default calendar URL is
+`http://127.0.0.1:14788/timestamp` (embedded Rust calendar) instead of the public
+Alice mainnet calendar. `lord commit timestamp` submits via HTTP loopback to the
+running listener so the anchor worker shares the same queue.
+
+Calendar state lives in `{chain_scoped_data_dir}/calendar/` (`state.json` snapshot).
+Implementation crate: `crates/lord-calendar`.
 
 `lord commit timestamp` requires an existing `CommitmentMeta` from
 `lord storage encode`. `--dry-run` builds a local stub OTS proof for tests
@@ -346,9 +386,60 @@ commit, LMDB changes are rolled back and the pending OTS file is removed without
 touching any previously published proof. If LMDB already records a timestamp but
 breccia is missing the entry, retry appends breccia without `--force`.
 
-`lord commit verify` performs a **binding check** only: the proof must parse as
-SHA256 and its `start_digest` must equal `SHA256(bao_root)`. Full Bitcoin
-attestation verification is deferred.
+`lord commit upgrade` fetches the best known proof from the calendar
+(`GET {calendar_uri}/upgrade?digest=<sha256(bao_root)_hex>`), using the same
+URL resolution as `commit timestamp` (`--calendar-url`, settings, embedded
+defaults). It updates `ots/{bao_root}.ots` atomically and refreshes LMDB
+`ots_order_key` / `COMMITMENT_ORDER` when the upgraded proof's order key
+changes. Returns `upgraded: false` when the on-disk proof already matches the
+calendar. Errors: not timestamped, calendar unreachable, HTTP 404 (not anchored
+yet).
+
+**Atomic upgrade flow:** pending OTS write → LMDB txn (when order key changes) →
+publish OTS. LMDB rolls back on publish failure without touching the previous
+proof. When proof bytes already match the calendar but LMDB `ots_order_key` is
+missing or stale, upgrade repairs LMDB without rewriting the proof file.
+
+**Crash window:** a process kill between LMDB commit and proof publish can leave
+new `ots_order_key` in LMDB with the old proof on disk. A subsequent
+`commit upgrade` detects the mismatch (proof bytes match calendar but order key
+differs) and repairs LMDB without rewriting the proof.
+
+`lord commit verify` checks digest binding (`SHA256(bao_root)` must match the
+proof `start_digest`) and, when bitcoind RPC is configured, verifies Bitcoin
+attestation steps against `getblockheader` (merkle root at attested height,
+1-conf / best-chain semantics). Confirmed attestations include `confirmations`
+(`chain_tip - height + 1` from `getblockcount`). Without `--digest-only`, RPC
+client failure exits non-zero — attestation was requested but the header source
+is unavailable. Pass `--digest-only` to verify digest binding only (reports
+`attestation: unavailable` and exits 0 when binding passes).
+
+**`--full` cross-store verify:** with `--full`, Lord also checks consistency
+across LMDB (`storage/`), the detached `ots/{bao_root}.ots` file, breccia
+(`global.breccia`), and the on-disk carbonado blob. The carbonado check is not
+merely “file exists”: it parses the header, confirms the Bao root and format
+match LMDB metadata, and authenticates the header MAC. Output is
+`VerifyFullResult` with nested `ots` and `cross_store` objects; both must be
+`valid: true`. Combine with `--digest-only` to skip Bitcoin attestation while
+still running the cross-store checks (useful on regtest without bitcoind).
+
+Attestation outcomes: `confirmed` (merkle match, optional `confirmations`),
+`pending` (calendar only), `failed` (merkle mismatch or structural error),
+`unavailable` (header lookup failed or no RPC), `unknown` (unrecognized
+attestation type; fails verification). Fork aggregation prefers `confirmed` >
+`unknown` > `pending` > `failed` > `unavailable`. **Reorg caveat:** a proof
+verified as confirmed only reflects the node's current best chain; a reorg can
+invalidate it.
+
+`/commitment/{bao_root}` HTML and `/r/commitment/{bao_root}` JSON (`CommitmentInfo`)
+include `ots_attestation` with the same status, block height, and confirmations
+when the commitment is timestamped and RPC is available.
+
+`lord filepack verify` checks manifest structure (JSON fingerprint recompute or
+Casey CBOR via `--filepack-compat`) and LMDB `filepack_fp` bindings for every
+listed commitment. In compat mode, the sidecar cross-check validates **path sets**
+only (Casey package paths vs `lord.carbonado.cbor` bindings); it does not compare
+Casey source hashes against the sidecar.
 
 `lord commit list` and `/commitments` list **timestamped commitments only**
 (entries in `COMMITMENT_ORDER`). Encoded-but-not-timestamped roots appear on
@@ -367,7 +458,7 @@ attestation verification is deferred.
 mark-word database; a future phase may migrate to or interoperate with that
 format for global replication.
 
-### `storage/` schema version 3
+### `storage/` schema version 4
 
 Migrations chain in place on open:
 
@@ -377,26 +468,37 @@ Migrations chain in place on open:
    already-timestamped rows (`ots_order_key` present) the value is taken from the
    matching breccia entry when available, otherwise `created_at`; statistic bumped
    to **3**.
+3. **v3 → v4:** for each timestamped commitment (`ots_proof_path` set), re-read
+   the detached `.ots` file, recompute the merkle-path `ots_order_key`, update
+   `CommitmentMeta` and `COMMITMENT_ORDER` when the key changed; statistic bumped
+   to **4**. Breccia is append-only — migration updates LMDB only; existing
+   breccia rows keep their historical key bytes; new timestamps write the new keys.
 
-Schema **0** or versions newer than **3** are rejected.
+Schema **0** or versions newer than **4** are rejected.
 
 `COMMITMENT_ORDER` maps `ots_order_key` bytes → `bao_root` for sorted
-`lord commit list` and `/commitments` explorer pages.
+`lord commit list` and `/commitments` explorer pages. LMDB rejects zero-length
+keys, so the database stores an **order-preserving** encoded form: each logical
+path byte is stored as `byte + 1` with a `0x00` terminator (empty path →
+`[0x00]`); the no-attestation sentinel is stored raw. LMDB iteration order
+matches logical lex order on path bytes. `CommitmentMeta.ots_order_key` and API
+JSON keep the logical path bytes.
 
-### OTS order key (BFS left-to-right, PR3 minimal)
+v4 migration is **fail-open** for missing or corrupt `.ots` files: it logs a
+warning, removes stale `COMMITMENT_ORDER` entries, clears `ots_order_key`, and
+continues opening storage so operators can restore proofs and re-timestamp.
 
-PR3 implements the **BFS index** half of the design-doc ordering rule. The order
-key is the big-endian `u64` breadth-first index of the first `Attestation` leaf
-when the OTS proof tree is traversed left-to-right, breadth-first. Proofs with
-no attestation leaf use `u64::MAX` as a sentinel (sorts last). The full
-**merkle path** (per-fork left/right branch indices) described in
-`design.md` is deferred to a later phase; PR3 keys are comparable and
-deterministic for stub and calendar proofs but do not encode branch paths.
+### OTS order key (merkle path, BFS discovery)
 
-1. Model each `Fork` as an ordered list of child subtrees (left-to-right).
-2. Breadth-first traverse: root, then level 1 left-to-right, then level 2, …
-3. Find the first `Attestation` leaf; its BFS index becomes the order key.
-4. Compare commitments by lexicographic order on those bytes.
+Implementation: `crates/lord-storage/src/ots_order.rs` (re-exported from
+`lord-commit`). Encoding matches `design.md`:
+
+1. Breadth-first, left-to-right walk to the first `Attestation` leaf.
+2. Record the child index (`0` = leftmost) at each `Fork` on the path from root
+   to that leaf; concatenate as one byte per fork → variable-length key.
+3. Attestation at root (no `Fork` on path): empty key `[]`.
+4. No attestation leaf: 8-byte big-endian `u64::MAX` sentinel.
+5. Compare commitments by lexicographic order on key bytes.
 
 `COMMITMENT_ORDER` rejects duplicate order keys mapping to different `bao_root`
 values (collision detection).
@@ -425,7 +527,7 @@ Bincode-serialized struct appended to `global.breccia`:
 |-------|----------|
 | `/commitment/{bao_root}` | HTML commitment detail (metadata, OTS status, links) |
 | `/commitments`, `/commitments/{page}` | Paginated list ordered by `ots_order_key` |
-| `/content/{bao_root}` | Serve raw carbonado file bytes for public formats (403 for private; 32 MiB max; PR3 minimal — Bao streaming decode deferred) |
+| `/content/{bao_root}` | Serve decoded inner payload for public commitments via full `carbonado::file::decode` (header MAC auth → Bao → Zfec → decrypt → decompress); 403 for private/odd formats; 400 when decoded payload exceeds 32 MiB or carbonado is corrupt; 400 when encoded on-disk blob exceeds derived encoded cap (~2× decoded + header); 404 when carbonado file missing; `Content-Type` sniffed from decoded bytes; `X-Content-Type-Options: nosniff` |
 | `/r/commitment/{bao_root}`, `/r/commitments`, `/r/commitments/{page}` | JSON API when enabled |
 
 `fallback` / `search`: 64-hex `bao_root` queries that match a stored commitment
@@ -491,7 +593,8 @@ Gone** (not a silent fallback 404):
 
 | Pattern | Status | Notes |
 |---------|--------|-------|
-| `/inscription*`, `/inscriptions*` (GET and POST), `/preview*`, `/children*`, `/parents*`, `/item*`, `/decode*`, `/content*`, `/metadata*`, `/feed.xml` | **410 Gone** | Inscriptions permanently removed |
+| `/inscription*`, `/inscriptions*` (GET and POST), `/preview*`, `/children*`, `/parents*`, `/item*`, `/decode*`, `/content/{inscription_id}`, `/metadata*`, `/feed.xml` | **410 Gone** | Inscription content permanently removed |
+| `/content/{bao_root}` (64-hex commitment root) | **200 OK** (public) / **403** (private) | Decoded Carbonado commitment plaintext — see [PR3 explorer routes](#explorer-routes) |
 | `/rune*`, `/runes*`, `/collections*`, `/galleries*`, `/gallery*`, `/offer`, `/offers*` | **410 Gone** | Runes/collections/offers permanently removed |
 | `/r/inscription*`, `/r/children*`, `/r/parents*`, `/r/sat/*/at/*` | **410 Gone** | Recursive inscription/sat-at-index endpoints removed |
 | `fallback` / `search` inscription-id, rune-id, spaced-rune queries | **410 Gone** | Was previously indistinguishable from missing resources |
@@ -560,8 +663,8 @@ sat-specific CLI/server code. Runtime sat indexing still requires the
 
 ### Configuration filenames
 
-- **`lord.yaml`** — preferred example config for new deployments (`/var/lib/lord` paths; see repo root `lord.yaml`).
-- **`ord.yaml`** — retained for ord compatibility; `Settings` still probes `ord.yaml` in the data directory by default (`src/settings.rs`). Operators may symlink `lord.yaml` → `ord.yaml` or set `--config` explicitly until defaults are switched in a later phase.
+- **`lord.yaml`** — preferred example config for new deployments (`/var/lib/lord` paths; see repo root `lord.yaml`). `Settings` probes `lord.yaml` first in the config/data directory (`src/settings.rs`).
+- **`ord.yaml`** — retained for ord compatibility; loaded when `lord.yaml` is absent. Operators upgrading from ord can keep `ord.yaml` or migrate to `lord.yaml` without symlinks.
 
 ### Root crate dependencies
 

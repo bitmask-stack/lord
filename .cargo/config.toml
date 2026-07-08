@@ -1,0 +1,3 @@
+# Monorepo: patch carbonado's git bao-tree dep to the sibling checkout (see README).
+[patch."https://github.com/SurmountSystems/bao-tree.git"]
+bao-tree = { path = "../bao-tree" }

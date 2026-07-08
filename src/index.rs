@@ -34,10 +34,13 @@ mod fetcher;
 mod lot;
 mod records;
 mod reorg;
+mod txindex;
 
 mod store;
 mod updater;
 mod utxo_entry;
+
+pub(crate) use txindex::TxindexStatus;
 
 #[cfg(test)]
 pub(crate) mod testing;
@@ -165,6 +168,7 @@ pub struct Index {
   height_limit: Option<u32>,
   pub(crate) index_addresses: bool,
   pub(crate) index_sats: bool,
+  pub(crate) txindex_status: TxindexStatus,
   pub(crate) path: PathBuf,
   pub(crate) settings: Settings,
   started: DateTime<Utc>,
@@ -243,6 +247,16 @@ impl Index {
       u32::MAX
     };
 
+    let txindex_status = txindex::detect_txindex_status(&client);
+
+    if (index_sats || index_addresses) && !txindex_status.allows_raw_transaction_lookup() {
+      bail!("{}", txindex_status.requires_txindex_message());
+    }
+
+    if let Some(warning) = txindex_status.startup_warning() {
+      log::warn!("{warning}");
+    }
+
     Ok(Self {
       genesis_block_coinbase_txid: genesis_block_coinbase_transaction.compute_txid(),
       client,
@@ -254,11 +268,20 @@ impl Index {
       height_limit: settings.height_limit(),
       index_addresses,
       index_sats,
+      txindex_status,
       settings: settings.clone(),
       path,
       started: Utc::now(),
       unrecoverably_reorged: AtomicBool::new(false),
     })
+  }
+
+  pub fn txindex_status(&self) -> TxindexStatus {
+    self.txindex_status
+  }
+
+  pub fn raw_transaction_lookup_available(&self) -> bool {
+    self.txindex_status.allows_raw_transaction_lookup()
   }
 
   pub(crate) fn chain(&self) -> Chain {
@@ -330,6 +353,8 @@ impl Index {
       lost_sats: statistic(Statistic::LostSats)?,
       sat_index: self.has_sat_index(),
       started: self.started,
+      txindex: self.txindex_status.label().into(),
+      txindex_available: self.raw_transaction_lookup_available(),
       unrecoverably_reorged: self.unrecoverably_reorged.load(atomic::Ordering::Relaxed),
       uptime: (Utc::now() - self.started).to_std()?,
     })
@@ -727,6 +752,10 @@ impl Index {
       }));
     }
 
+    if !self.raw_transaction_lookup_available() {
+      return Ok(None);
+    }
+
     self
       .client
       .get_raw_transaction_info(txid, None)
@@ -738,7 +767,21 @@ impl Index {
       return Ok(Some(self.genesis_block_coinbase_transaction.clone()));
     }
 
+    if !self.raw_transaction_lookup_available() {
+      return Ok(None);
+    }
+
     self.client.get_raw_transaction(&txid, None).into_option()
+  }
+
+  pub fn get_transaction_unavailable_reason(&self, txid: Txid) -> Option<String> {
+    if self.raw_transaction_lookup_available() {
+      return None;
+    }
+    Some(txindex::raw_transaction_unavailable_message(
+      self.txindex_status,
+      txid,
+    ))
   }
 
   pub fn get_transaction_hex_recursive(&self, txid: Txid) -> Result<Option<String>> {
@@ -746,6 +789,10 @@ impl Index {
       return Ok(Some(consensus::encode::serialize_hex(
         &self.genesis_block_coinbase_transaction,
       )));
+    }
+
+    if !self.raw_transaction_lookup_available() {
+      return Ok(None);
     }
 
     self
@@ -903,6 +950,15 @@ impl Index {
 
     if outpoint == self.settings.chain().genesis_coinbase_outpoint() {
       return Ok(true);
+    }
+
+    if !self.raw_transaction_lookup_available() {
+      return Ok(
+        self
+          .client
+          .get_tx_out(&outpoint.txid, outpoint.vout, Some(true))?
+          .is_some(),
+      );
     }
 
     let Some(info) = self

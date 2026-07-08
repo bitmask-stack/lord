@@ -22,6 +22,8 @@
   <dd>{{ self.address_index }}</dd>
   <dt>sat index</dt>
   <dd>{{ self.sat_index }}</dd>
+  <dt>txindex</dt>
+  <dd>{{ self.txindex_label() }}</dd>
   <dt>json api</dt>
   <dd>{{ self.json_api }}</dd>
 %% if !env!("GIT_BRANCH").is_empty() {

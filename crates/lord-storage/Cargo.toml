@@ -16,8 +16,10 @@ bao-tree = { package = "bao-tree", path = "../../../bao-tree" }
 carbonado = { path = "../../../carbonado" }
 getrandom = "0.2"
 hex.workspace = true
+log = "0.4"
 heed3.workspace = true
 lord-db = { path = "../lord-db" }
+opentimestamps = "0.2.0"
 minicbor = { version = "2.1.1", features = ["alloc", "derive"] }
 rand = "0.8"
 rkyv.workspace = true

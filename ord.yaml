@@ -1,7 +1,7 @@
 # example config (ord compatibility)
 #
-# Prefer lord.yaml for new deployments. Settings still probes ord.yaml by default;
-# see docs/src/lord/implementation.md for the compatibility policy.
+# Prefer lord.yaml for new deployments. Settings probes lord.yaml first, then
+# falls back to ord.yaml; see docs/src/lord/implementation.md.
 #
 # Wallet path: {data_dir}/wallets/<name>/ (heed3 LMDB directory, not <name>.redb)
 

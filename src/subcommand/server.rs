@@ -167,6 +167,13 @@ impl Server {
       INDEXER.lock().unwrap().replace(index_thread);
 
       let settings = Arc::new(settings);
+      // Keeps the embedded HTTP listener and anchor worker alive for the server lifetime.
+      // Commit timestamps reach the calendar via HTTP loopback (`calendar_uri`), not this handle.
+      let embedded_calendar = settings
+        .calendar_enabled()
+        .then(|| crate::calendar::spawn_embedded_calendar(settings.as_ref()))
+        .transpose()?;
+      let _keep_embedded_calendar_alive = embedded_calendar;
       let acme_domains = self.acme_domains()?;
 
       let server_config = Arc::new(ServerConfig {
@@ -1028,6 +1035,10 @@ impl Server {
     AcceptJson(accept_json): AcceptJson,
   ) -> ServerResult {
     task::block_in_place(|| {
+      if let Some(reason) = index.get_transaction_unavailable_reason(txid) {
+        return Err(ServerError::Unavailable(reason));
+      }
+
       let transaction = index
         .get_transaction(txid)?
         .ok_or_not_found(|| format!("transaction {txid}"))?;

@@ -3,7 +3,33 @@ set positional-arguments
 watch +args='test':
   cargo watch --clear --exec '{{args}}'
 
-ci: clippy forbid
+deps-check:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  missing=0
+  for dep in ../carbonado ../bao-tree; do
+    if [ ! -d "$dep" ]; then
+      echo "missing path dependency: $dep" >&2
+      missing=1
+    fi
+  done
+  if [ "$missing" -ne 0 ]; then
+    echo "Clone carbonado and bao-tree as siblings of lord under surmount/ — see README Monorepo layout." >&2
+    exit 1
+  fi
+
+smoke:
+  cargo test --test integration smoke:: -- --nocapture
+
+test-all:
+  cargo test --all
+
+ci-local: deps-check smoke clippy forbid
+  cargo fmt --all -- --check
+  just test-all
+
+ci: smoke
+  clippy forbid
   cargo fmt -- --check
   cargo test --all
   cargo test --all -- --ignored
@@ -184,6 +210,79 @@ install-mdbook:
   cargo install mdbook@0.4.52
   cargo install mdbook-i18n-helpers@0.3.6
   cargo install mdbook-linkcheck@0.7.7
+
+docs: build-docs
+
+# Commitment ceremony. Invoke: `just ceremony` (regtest), `just ceremony signet`, `just ceremony mainnet`.
+# Regtest: encode + dry-run timestamp + --full verify (no bitcoind).
+# Signet/mainnet: encode + doctor probe + printed live steps. Fill docs/ACCEPTANCE-SIGNET.md.
+# Optional: LORD_DATADIR=/path/to/signet just ceremony signet
+ceremony CHAIN='regtest':
+  #!/usr/bin/env bash
+  set -euo pipefail
+  chain="{{CHAIN}}"
+  case "$chain" in
+    regtest) lord_flags="--regtest" ;;
+    signet) lord_flags="--signet" ;;
+    mainnet) lord_flags="" ;;
+    testnet3) lord_flags="--testnet" ;;
+    testnet4) lord_flags="--testnet4" ;;
+    *) echo "unsupported CHAIN=$chain (use regtest, signet, mainnet, testnet3, testnet4)" >&2; exit 1 ;;
+  esac
+  if [ -n "${LORD_DATADIR:-}" ]; then
+    work="$LORD_DATADIR"
+    mkdir -p "$work"
+  else
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+  fi
+  hello="$work/hello.txt"
+  echo "hello signet acceptance $(date -Iseconds)" > "$hello"
+  lord=(cargo run --quiet --bin lord --)
+  echo "== Lord commitment ceremony (chain=$chain, datadir=$work) =="
+  if ! command -v jq >/dev/null; then
+    echo "jq not found; install jq for bao_root extraction" >&2
+    exit 1
+  fi
+  encode_out="$("${lord[@]}" $lord_flags --datadir "$work" storage encode "$hello" --format c12)"
+  echo "$encode_out"
+  bao_root="$(echo "$encode_out" | jq -r '.bao_root')"
+  if [ -z "$bao_root" ] || [ "$bao_root" = null ]; then
+    echo "failed to parse bao_root from storage encode output" >&2
+    exit 1
+  fi
+  echo "bao_root=$bao_root"
+  if [ "$chain" = regtest ]; then
+    "${lord[@]}" $lord_flags --datadir "$work" commit timestamp "$bao_root" --dry-run
+    "${lord[@]}" $lord_flags --datadir "$work" commit verify "$bao_root" --full --digest-only
+    echo "Dry-run ceremony complete. For live anchor: calendar serve, timestamp without --dry-run, mine, upgrade."
+    exit 0
+  fi
+  echo ""
+  echo "== Live ceremony (requires synced bitcoind + funded anchor wallet) =="
+  if [ "$chain" = signet ]; then
+    echo "bitcoind: signet=1 in bitcoin.conf; RPC port 38332; fund via signet faucet"
+    echo "Acceptance checklist: docs/ACCEPTANCE-SIGNET.md"
+  fi
+  if "${lord[@]}" $lord_flags calendar doctor 2>/dev/null | jq -e . >/dev/null 2>&1; then
+    echo "calendar doctor (global datadir, not ceremony temp dir):"
+    "${lord[@]}" $lord_flags calendar doctor | jq '{bitcoind_reachable, calendar_reachable, wallet_balance_sats, pending_digests, last_anchor_txid, wallet_error, calendar_error}'
+  else
+    echo "calendar doctor skipped or failed — start bitcoind and calendar before live steps"
+  fi
+  echo ""
+  echo "export LORD_DATADIR=$work   # optional: reuse this datadir for live steps"
+  echo "cargo run --bin lord -- $lord_flags --datadir $work calendar serve &"
+  echo "cargo run --bin lord -- $lord_flags --datadir $work commit timestamp $bao_root"
+  echo "# wait for calendar anchor (signet: seconds; mainnet: up to ~1h)"
+  echo "cargo run --bin lord -- $lord_flags --datadir $work calendar doctor"
+  echo "cargo run --bin lord -- $lord_flags --datadir $work commit upgrade $bao_root"
+  echo "cargo run --bin lord -- $lord_flags --datadir $work commit verify $bao_root --full"
+  echo "cargo run --bin lord -- $lord_flags --datadir $work commit list"
+  if [ "$chain" = signet ]; then
+    echo ""
+    echo "Record results in docs/ACCEPTANCE-SIGNET.md before mainnet rollout."
+  fi
 
 build-docs:
   #!/usr/bin/env bash

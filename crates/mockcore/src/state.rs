@@ -11,6 +11,8 @@ pub struct State {
   pub locked: BTreeSet<OutPoint>,
   pub mempool: Vec<Transaction>,
   pub network: Network,
+  pub txindex_enabled: bool,
+  pub txindex_synced: bool,
   pub nonce: u32,
   pub receive_addresses: BTreeSet<Address>,
   pub transactions: BTreeMap<Txid, Transaction>,
@@ -22,7 +24,13 @@ pub struct State {
 }
 
 impl State {
-  pub(crate) fn new(network: Network, version: usize, fail_lock_unspent: bool) -> Self {
+  pub(crate) fn new(
+    network: Network,
+    version: usize,
+    fail_lock_unspent: bool,
+    txindex_enabled: bool,
+    txindex_synced: bool,
+  ) -> Self {
     let mut hashes = Vec::new();
     let mut blocks = BTreeMap::new();
 
@@ -41,6 +49,8 @@ impl State {
       locked: BTreeSet::new(),
       mempool: Vec::new(),
       network,
+      txindex_enabled,
+      txindex_synced,
       nonce: 0,
       receive_addresses: BTreeSet::new(),
       transactions: BTreeMap::new(),
@@ -85,7 +95,13 @@ impl State {
   }
 
   pub(crate) fn clear(&mut self) {
-    *self = Self::new(self.network, self.version, self.fail_lock_unspent);
+    *self = Self::new(
+      self.network,
+      self.version,
+      self.fail_lock_unspent,
+      self.txindex_enabled,
+      self.txindex_synced,
+    );
   }
 
   #[track_caller]
@@ -153,7 +169,7 @@ impl State {
       .transactions
       .insert(coinbase.compute_txid(), coinbase.clone());
 
-    let block = Block {
+    let mut block = Block {
       header: Header {
         version: bitcoin::block::Version::ONE,
         prev_blockhash: *self.hashes.last().unwrap(),
@@ -166,6 +182,10 @@ impl State {
         .chain(self.mempool.drain(0..))
         .collect(),
     };
+
+    if let Some(merkle_root) = block.compute_merkle_root() {
+      block.header.merkle_root = merkle_root;
+    }
 
     for tx in block.txdata.iter() {
       self

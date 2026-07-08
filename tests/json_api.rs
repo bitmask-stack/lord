@@ -239,6 +239,8 @@ fn get_status_without_sats_feature() {
       lost_sats: 0,
       sat_index: false,
       started: dummy_started,
+      txindex: "available".into(),
+      txindex_available: true,
       unrecoverably_reorged: false,
       uptime: dummy_duration,
     }
@@ -366,6 +368,8 @@ fn get_status() {
       lost_sats: 0,
       sat_index: true,
       started: dummy_started,
+      txindex: "available".into(),
+      txindex_available: true,
       unrecoverably_reorged: false,
       uptime: dummy_duration,
     }

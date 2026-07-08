@@ -2,7 +2,7 @@ use {
   super::*,
   axum_server::Handle,
   bitcoincore_rpc::{Auth, Client, RpcApi},
-  lord::{Index, parse_ord_server_args},
+  lord::{Index, parse_ord_server_args, settings::Settings},
   reqwest::blocking::Response,
   std::net::SocketAddr,
   sysinfo::System,
@@ -14,8 +14,9 @@ pub(crate) struct TestServer {
   port: u16,
   server_password: Option<String>,
   server_username: Option<String>,
+  data_dir: PathBuf,
   #[allow(unused)]
-  tempdir: TempDir,
+  tempdir: Option<TempDir>,
 }
 
 impl TestServer {
@@ -27,27 +28,69 @@ impl TestServer {
     Self::spawn_with_server_args(core, ord_args, &[])
   }
 
+  pub(crate) fn spawn_on_datadir(
+    core: &mockcore::Handle,
+    data_dir: &Path,
+    ord_args: &[&str],
+  ) -> Self {
+    Self::spawn_on_datadir_with_server_args(core, data_dir, ord_args, &[])
+  }
+
+  pub(crate) fn spawn_on_datadir_with_server_args(
+    core: &mockcore::Handle,
+    data_dir: &Path,
+    ord_args: &[&str],
+    ord_server_args: &[&str],
+  ) -> Self {
+    let cookiefile = data_dir.join("cookie");
+    if !cookiefile.exists() {
+      fs::write(&cookiefile, "username:password").unwrap();
+    }
+
+    let (settings, server) = parse_ord_server_args(&format!(
+      "lord --bitcoin-rpc-url {} --cookie-file {} --bitcoin-data-dir {} --datadir {} {} server {} --http-port 0 --address 127.0.0.1",
+      core.url(),
+      cookiefile.to_str().unwrap(),
+      data_dir.display(),
+      data_dir.display(),
+      ord_args.join(" "),
+      ord_server_args.join(" "),
+    ));
+
+    Self::start(core, server, settings, data_dir.to_path_buf(), None)
+  }
+
   pub(crate) fn spawn_with_server_args(
     core: &mockcore::Handle,
     ord_args: &[&str],
     ord_server_args: &[&str],
   ) -> Self {
     let tempdir = TempDir::new().unwrap();
+    let data_dir = tempdir.path().to_path_buf();
 
-    let cookiefile = tempdir.path().join("cookie");
-
+    let cookiefile = data_dir.join("cookie");
     fs::write(&cookiefile, "username:password").unwrap();
 
     let (settings, server) = parse_ord_server_args(&format!(
       "lord --bitcoin-rpc-url {} --cookie-file {} --bitcoin-data-dir {} --datadir {} {} server {} --http-port 0 --address 127.0.0.1",
       core.url(),
       cookiefile.to_str().unwrap(),
-      tempdir.path().display(),
-      tempdir.path().display(),
+      data_dir.display(),
+      data_dir.display(),
       ord_args.join(" "),
       ord_server_args.join(" "),
     ));
 
+    Self::start(core, server, settings, data_dir, Some(tempdir))
+  }
+
+  fn start(
+    core: &mockcore::Handle,
+    server: lord::subcommand::server::Server,
+    settings: Settings,
+    data_dir: PathBuf,
+    tempdir: Option<TempDir>,
+  ) -> Self {
     let credentials = settings
       .credentials()
       .map(|(username, password)| (username.to_string(), password.to_string()));
@@ -77,6 +120,7 @@ impl TestServer {
       port,
       server_password: credentials.as_ref().map(|(_, password)| password.clone()),
       server_username: credentials.map(|(username, _)| username),
+      data_dir,
       tempdir,
     }
   }
@@ -86,7 +130,7 @@ impl TestServer {
   }
 
   pub(crate) fn data_dir(&self) -> PathBuf {
-    self.tempdir.path().to_path_buf()
+    self.data_dir.clone()
   }
 
   #[track_caller]

@@ -112,6 +112,18 @@ impl From<Chain> for Network {
   }
 }
 
+impl From<Chain> for lord_calendar::Chain {
+  fn from(chain: Chain) -> lord_calendar::Chain {
+    match chain {
+      Chain::Mainnet => lord_calendar::Chain::Mainnet,
+      Chain::Regtest => lord_calendar::Chain::Regtest,
+      Chain::Signet => lord_calendar::Chain::Signet,
+      Chain::Testnet => lord_calendar::Chain::Testnet,
+      Chain::Testnet4 => lord_calendar::Chain::Testnet4,
+    }
+  }
+}
+
 impl Display for Chain {
   fn fmt(&self, f: &mut Formatter) -> fmt::Result {
     write!(

@@ -42,6 +42,48 @@ fn storage_encode_verify_roundtrip() {
 }
 
 #[test]
+fn filepack_verify_rejects_compat_flag_on_json_manifest() {
+  let tempdir = Arc::new(TempDir::new().expect("tempdir"));
+
+  let manifest = CommandBuilder::new("--regtest filepack create bundle --format c12")
+    .temp_dir(tempdir.clone())
+    .write("bundle/one.txt", b"one")
+    .stdout_regex(".*")
+    .run_and_deserialize_output::<lord_storage::FilepackManifest>();
+
+  CommandBuilder::new(format!(
+    "--regtest filepack verify {} --filepack-compat",
+    manifest.fingerprint
+  ))
+  .temp_dir(tempdir)
+  .expected_exit_code(1)
+  .stderr_regex(".*Casey CBOR.*")
+  .run_and_extract_stdout();
+}
+
+#[test]
+fn filepack_verify_roundtrip() {
+  let tempdir = Arc::new(TempDir::new().expect("tempdir"));
+
+  let manifest = CommandBuilder::new("--regtest filepack create bundle --format c12")
+    .temp_dir(tempdir.clone())
+    .write("bundle/one.txt", b"one")
+    .stdout_regex(".*")
+    .run_and_deserialize_output::<lord_storage::FilepackManifest>();
+
+  let verified = CommandBuilder::new(format!(
+    "--regtest filepack verify {}",
+    manifest.fingerprint
+  ))
+  .temp_dir(tempdir)
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<lord_storage::VerifyFilepackResult>();
+
+  assert!(verified.valid);
+  assert_eq!(verified.fingerprint, manifest.fingerprint);
+}
+
+#[test]
 fn filepack_create_writes_manifest_and_updates_metadata() {
   let tempdir = Arc::new(TempDir::new().expect("tempdir"));
 

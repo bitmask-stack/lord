@@ -1,18 +1,13 @@
-use std::io::Cursor;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
-use bao_tree::{
-  BaoTree, ChunkRanges,
-  io::{outboard::EmptyOutboard, sync::keyed_decode_ranges},
-};
 use carbonado::{
-  constants::{BAO_BLOCK_SIZE, Format, MAGICNO, SLICE_LEN},
-  crypto::compute_header_mac,
+  constants::{Format, SLICE_LEN},
   file::Header,
-  utils::decode_bao_hash,
   verify_slice,
 };
+
+use crate::decode::{authenticate_header, keyed_decode_bao};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 
@@ -111,7 +106,7 @@ pub fn verify_commitment(
   }
 
   let body = &encoded[Header::LEN..];
-  let total_slices = header.encoded_len.div_ceil(u32::from(SLICE_LEN));
+  let total_slices = header.encoded_len.div_ceil(SLICE_LEN);
   if total_slices == 0 {
     return Ok(VerifyResult {
       bao_root: bao_root_hex.into(),
@@ -130,7 +125,7 @@ pub fn verify_commitment(
     keyed_decode_bao(body, &bao_root, meta.format).context("keyed bao verification failed")?;
 
   for index in indices {
-    verify_sampled_slice(body, &decoded, index)
+    verify_sampled_slice(body, &decoded, index, &bao_root, meta.format)
       .with_context(|| format!("bao slice {index} failed verification"))?;
   }
 
@@ -141,75 +136,63 @@ pub fn verify_commitment(
   })
 }
 
-fn authenticate_header(master_key: &[u8], header: &Header) -> Result<()> {
-  let mut auth_data = Vec::new();
-  auth_data.extend_from_slice(MAGICNO);
-  auth_data.extend_from_slice(&header.payload_nonce);
-  auth_data.extend_from_slice(header.hash.as_bytes());
-  auth_data.extend_from_slice(&header.slh_public_key);
-  auth_data.push(header.format.bits());
-  auth_data.extend_from_slice(&header.chunk_index.to_le_bytes());
-  auth_data.extend_from_slice(&header.encoded_len.to_le_bytes());
-  auth_data.extend_from_slice(&header.padding_len.to_le_bytes());
-  auth_data.extend_from_slice(&header.metadata.unwrap_or([0u8; 8]));
+/// Lightweight carbonado header binding check for cross-store verification.
+///
+/// Confirms the on-disk blob's Bao root and format match LMDB metadata and that the
+/// header MAC authenticates (no probabilistic Bao slice sampling).
+pub fn verify_carbonado_header_binding(
+  data_dir: impl AsRef<Path>,
+  meta: &crate::meta::CommitmentMeta,
+  bao_root: &[u8; 32],
+) -> Result<()> {
+  validate_carbonado_relative_path(&meta.carbonado_path)?;
 
-  let expected_mac = compute_header_mac(master_key, &auth_data)
-    .map_err(|err| anyhow::anyhow!("failed to compute header mac: {err}"))?;
-  if !constant_time_eq(&expected_mac, &header.header_mac) {
-    bail!("carbonado header authentication failed");
-  }
+  let paths = StoragePaths::new(data_dir.as_ref());
+  let carbonado_path = paths.carbonado_file_path(&meta.carbonado_path)?;
+  let encoded = std::fs::read(&carbonado_path).with_context(|| {
+    format!(
+      "failed to read carbonado file `{}`",
+      carbonado_path.display()
+    )
+  })?;
+
+  let header = Header::try_from(encoded.as_slice()).context("invalid carbonado header")?;
+  ensure!(
+    header.hash.as_bytes() == bao_root,
+    "carbonado header hash does not match requested bao root"
+  );
+  ensure!(
+    header.format.bits() == meta.format,
+    "carbonado header format c{} does not match stored metadata format c{}",
+    header.format.bits(),
+    meta.format
+  );
+
+  let master_key = master_key_for_verify(
+    meta.format,
+    &paths,
+    MasterKeyOptions {
+      master_key_hex: None,
+    },
+  )?;
+  authenticate_header(&master_key, &header)?;
   Ok(())
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-  if a.len() != b.len() {
-    return false;
-  }
-  let mut diff = 0u8;
-  for (left, right) in a.iter().zip(b.iter()) {
-    diff |= left ^ right;
-  }
-  diff == 0
-}
-
-/// Keyed Bao decode of a carbonado body (full inline response).
-///
-/// Carbonado stores complete pre-order Bao responses inline. Partial keyed decode
-/// over per-slice chunk ranges is incompatible with that layout (ParentHashMismatch).
-fn keyed_decode_bao(body: &[u8], bao_root: &[u8; 32], format: u8) -> Result<Vec<u8>> {
-  if body.len() < 8 {
-    bail!("bao body too short");
-  }
-  let content_len = u64::from_le_bytes(
-    body[0..8]
-      .try_into()
-      .map_err(|_| anyhow::anyhow!("invalid bao content length prefix"))?,
-  );
-  let response = &body[8..];
-  let root = decode_bao_hash(bao_root).map_err(|err| anyhow::anyhow!("invalid bao root: {err}"))?;
-  let tree = BaoTree::new(content_len, BAO_BLOCK_SIZE);
-  let key = bao_tree::blake3::derive_key("carbonado-v2/bao", &[format]);
-  let mut outboard = EmptyOutboard { tree, root };
-  let mut decoded = Vec::new();
-  keyed_decode_ranges(
-    Cursor::new(response),
-    &ChunkRanges::all(),
-    &mut decoded,
-    &mut outboard,
-    &key,
-  )
-  .map_err(|err| anyhow::anyhow!("keyed bao decode failed: {err}"))?;
-  Ok(decoded)
-}
-
 /// Cross-check a sampled slice against carbonado's partial proof API (`verify_slice`).
-fn verify_sampled_slice(body: &[u8], decoded: &[u8], index: u32) -> Result<()> {
+fn verify_sampled_slice(
+  body: &[u8],
+  decoded: &[u8],
+  index: u32,
+  bao_root: &[u8; 32],
+  format: u8,
+) -> Result<()> {
   let slice_start = (index as u64) * u64::from(SLICE_LEN);
   if slice_start >= decoded.len() as u64 {
     return Ok(());
   }
   let slice_end = (slice_start + u64::from(SLICE_LEN)).min(decoded.len() as u64);
-  let extracted = verify_slice(body, index, 1)
+  let extracted = verify_slice(body, index, 1, bao_root, format)
     .map_err(|err| anyhow::anyhow!("bao slice extract failed: {err}"))?;
   let actual = &decoded[slice_start as usize..slice_end as usize];
   ensure!(

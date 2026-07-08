@@ -97,15 +97,17 @@ impl Api for Server {
     verbose: bool,
   ) -> Result<Value, jsonrpc_core::Error> {
     if verbose {
-      let height = match self
-        .state()
-        .hashes
-        .iter()
-        .position(|hash| *hash == block_hash)
-      {
+      let state = self.state();
+      let height = match state.hashes.iter().position(|hash| *hash == block_hash) {
         Some(height) => height,
         None => return Err(Self::not_found()),
       };
+      let merkle_root = state
+        .blocks
+        .get(&block_hash)
+        .ok_or_else(Self::not_found)?
+        .header
+        .merkle_root;
 
       Ok(
         serde_json::to_value(GetBlockHeaderResult {
@@ -119,7 +121,7 @@ impl Api for Server {
           hash: block_hash,
           height,
           median_time: None,
-          merkle_root: TxMerkleNode::all_zeros(),
+          merkle_root,
           n_tx: 0,
           next_block_hash: None,
           nonce: 0,
@@ -149,13 +151,15 @@ impl Api for Server {
       None => return Err(Self::not_found()),
     };
 
+    let block = state.blocks.get(&block_hash).unwrap();
+
     Ok(GetBlockHeaderResult {
       height,
       hash: block_hash,
       confirmations: 0,
       version: bitcoin::block::Version::ONE,
       version_hex: None,
-      merkle_root: TxMerkleNode::all_zeros(),
+      merkle_root: block.header.merkle_root,
       time: 0,
       median_time: None,
       nonce: 0,
@@ -649,27 +653,39 @@ impl Api for Server {
       ));
     };
 
-    let mut confirmations = None;
-
-    'outer: for (height, hash) in state.hashes.iter().enumerate() {
-      for tx in &state.blocks[hash].txdata {
-        if tx.compute_txid() == txid {
-          confirmations = Some(state.hashes.len() - height);
-          break 'outer;
-        }
-      }
-    }
+    let (confirmations, blockhash, blockindex, blockheight) =
+      if let Some(&height) = state.txid_to_block_height.get(&txid) {
+        let blockhash = *state
+          .hashes
+          .get(height as usize)
+          .expect("block height out of bounds");
+        let block = state.blocks.get(&blockhash).expect("block missing");
+        let blockindex = block
+          .txdata
+          .iter()
+          .position(|block_tx| block_tx.compute_txid() == txid)
+          .expect("tx missing from block");
+        let confirmations = state.hashes.len() - height as usize;
+        (
+          confirmations.try_into().unwrap(),
+          Some(blockhash),
+          Some(blockindex),
+          Some(height),
+        )
+      } else {
+        (0, None, None, None)
+      };
 
     Ok(
       serde_json::to_value(GetTransactionResult {
         info: WalletTxInfo {
           txid,
-          confirmations: confirmations.unwrap().try_into().unwrap(),
+          confirmations,
           time: 0,
           timereceived: 0,
-          blockhash: None,
-          blockindex: None,
-          blockheight: None,
+          blockhash,
+          blockindex,
+          blockheight,
           blocktime: None,
           wallet_conflicts: Vec::new(),
           bip125_replaceable: Bip125Replaceable::Unknown,
@@ -683,6 +699,18 @@ impl Api for Server {
     )
   }
 
+  fn get_index_info(&self) -> Result<Value, jsonrpc_core::Error> {
+    let state = self.state();
+    if !state.txindex_enabled {
+      return Ok(serde_json::json!({}));
+    }
+    Ok(serde_json::json!({
+      "txindex": {
+        "synced": state.txindex_synced,
+      }
+    }))
+  }
+
   fn get_raw_transaction(
     &self,
     txid: Txid,
@@ -692,6 +720,14 @@ impl Api for Server {
     assert_eq!(blockhash, None, "Blockhash param is unsupported");
 
     let state = self.state();
+
+    if !state.txindex_enabled {
+      return Err(jsonrpc_core::Error {
+        code: jsonrpc_core::types::error::ErrorCode::ServerError(-5),
+        message: "No such mempool or blockchain transaction. Blockchain transactions are not indexed. Use gettransaction for wallet transactions.".into(),
+        data: None,
+      });
+    }
 
     let current_height: u32 = (state.hashes.len() - 1).try_into().unwrap();
 

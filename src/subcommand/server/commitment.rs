@@ -1,12 +1,20 @@
 use {
   super::*,
-  crate::templates::{CommitmentHtml, CommitmentListItem, CommitmentsHtml},
-  lord_storage::{StorageStore, Visibility, validate_carbonado_relative_path},
-  mime_guess::from_path,
+  crate::{
+    subcommand::commit::rpc_headers::RpcHeaderSource,
+    templates::{CommitmentHtml, CommitmentListItem, CommitmentsHtml},
+  },
+  axum::http::HeaderName,
+  lord_commit::verify_ots_proof_file,
+  lord_storage::{
+    DEFAULT_MAX_DECODED_PAYLOAD_BYTES, DecodeError, StorageStore, Visibility,
+    content_type_for_decoded_payload, decode_public_commitment_content,
+  },
 };
 
+const X_CONTENT_TYPE_OPTIONS: HeaderName = HeaderName::from_static("x-content-type-options");
+
 const COMMITMENTS_PAGE_SIZE: usize = 100;
-const MAX_COMMITMENT_CONTENT_BYTES: u64 = 32 * 1024 * 1024;
 
 pub(super) async fn commitment_detail(
   Extension(settings): Extension<Arc<Settings>>,
@@ -22,6 +30,15 @@ pub(super) async fn commitment_detail(
       .get_commitment(&rtxn, &root_bytes)?
       .ok_or_not_found(|| format!("commitment {bao_root}"))?;
     let timestamped = meta.is_timestamped();
+    let ots_attestation = if timestamped {
+      Some(ots_attestation_for_commitment(
+        &settings,
+        &bao_root,
+        meta.ots_proof_path.as_deref(),
+      )?)
+    } else {
+      None
+    };
 
     if accept_json {
       return Ok(
@@ -40,6 +57,7 @@ pub(super) async fn commitment_detail(
           ots_order_key: meta.ots_order_key.as_ref().map(hex::encode),
           timestamped,
           timestamped_at: meta.timestamped_at,
+          ots_attestation: ots_attestation.clone(),
         })
         .into_response(),
       );
@@ -61,6 +79,7 @@ pub(super) async fn commitment_detail(
         ots_order_key: meta.ots_order_key.as_ref().map(hex::encode),
         timestamped_at: meta.timestamped_at,
         timestamped,
+        ots_attestation,
       }
       .page(server_config)
       .into_response(),
@@ -174,48 +193,28 @@ pub(super) async fn commitment_content(
       .get_commitment(&rtxn, &root_bytes)?
       .ok_or_not_found(|| format!("commitment {bao_root}"))?;
 
-    if meta.visibility == Visibility::Private {
+    if meta.visibility == Visibility::Private || !meta.format.is_multiple_of(2) {
       return Err(ServerError::Forbidden(
-        "private commitment content requires authentication (not implemented in PR3)".into(),
+        "private commitment content requires authentication (not implemented)".into(),
       ));
     }
 
-    validate_carbonado_relative_path(&meta.carbonado_path)
-      .map_err(|err| ServerError::BadRequest(err.to_string()))?;
-    let path = settings
-      .data_dir()
-      .join("carbonado")
-      .join(&meta.carbonado_path);
-    if !path.is_file() {
-      return Err(ServerError::NotFound(format!(
-        "carbonado file `{}`",
-        meta.carbonado_path
-      )));
-    }
-
-    let file_len = std::fs::metadata(&path)
-      .map_err(|err| {
-        ServerError::Internal(anyhow::anyhow!("failed to stat carbonado file: {err}"))
-      })?
-      .len();
-    if file_len > MAX_COMMITMENT_CONTENT_BYTES {
-      return Err(ServerError::BadRequest(format!(
-        "carbonado file exceeds maximum size of {MAX_COMMITMENT_CONTENT_BYTES} bytes"
-      )));
-    }
-
-    let bytes = std::fs::read(&path).map_err(|err| {
-      ServerError::Internal(anyhow::anyhow!("failed to read carbonado file: {err}"))
-    })?;
-    let mime = from_path(&path).first_or_octet_stream();
+    let decoded = decode_public_commitment_content(
+      settings.data_dir(),
+      &meta,
+      &root_bytes,
+      DEFAULT_MAX_DECODED_PAYLOAD_BYTES,
+    )
+    .map_err(|err| decode_error_to_server_error(err, &meta.carbonado_path))?;
+    let mime = content_type_for_decoded_payload(&decoded);
 
     Ok(
       (
-        [(
-          header::CONTENT_TYPE,
-          HeaderValue::from_str(mime.as_ref()).unwrap(),
-        )],
-        bytes,
+        [
+          (header::CONTENT_TYPE, HeaderValue::from_str(mime).unwrap()),
+          (X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
+        ],
+        decoded,
       )
         .into_response(),
     )
@@ -224,6 +223,63 @@ pub(super) async fn commitment_content(
 
 pub(super) fn commitment_redirect(bao_root: &str) -> Redirect {
   Redirect::to(&format!("/commitment/{bao_root}"))
+}
+
+fn decode_error_to_server_error(err: DecodeError, carbonado_path: &str) -> ServerError {
+  match err {
+    DecodeError::Oversized { max_bytes } => ServerError::BadRequest(format!(
+      "decoded payload exceeds maximum size of {max_bytes} bytes"
+    )),
+    DecodeError::EncodedFileTooLarge { max_bytes, .. } => ServerError::BadRequest(format!(
+      "carbonado file exceeds maximum encoded size of {max_bytes} bytes"
+    )),
+    DecodeError::CarbonadoNotFound { .. } => {
+      ServerError::NotFound(format!("carbonado file `{carbonado_path}`"))
+    }
+    DecodeError::CarbonadoIo { .. } => ServerError::Internal(anyhow::anyhow!(
+      "failed to read carbonado file `{carbonado_path}`"
+    )),
+    DecodeError::InvalidPath(message) => ServerError::BadRequest(message),
+    DecodeError::PrivateFormat => ServerError::Forbidden(
+      "private commitment content requires authentication (not implemented)".into(),
+    ),
+    DecodeError::InvalidHeader
+    | DecodeError::HeaderAuthFailed
+    | DecodeError::HeaderBindingMismatch
+    | DecodeError::FormatMismatch { .. }
+    | DecodeError::CorruptPayload => {
+      ServerError::BadRequest("invalid or corrupt commitment content".into())
+    }
+    DecodeError::Internal(err) => ServerError::Internal(err),
+  }
+}
+
+fn ots_attestation_for_commitment(
+  settings: &Settings,
+  bao_root_hex: &str,
+  proof_path: Option<&str>,
+) -> Result<lord_commit::AttestationVerifyStatusJson> {
+  let Some(proof_path) = proof_path else {
+    return Ok(lord_commit::AttestationVerifyStatusJson::Unavailable {
+      reason: "timestamped commitment is missing ots_proof_path".into(),
+    });
+  };
+  let verify = |headers: Option<&dyn lord_commit::BlockHeaderSource>| {
+    verify_ots_proof_file(settings.data_dir(), bao_root_hex, proof_path, headers)
+  };
+  if let Ok(client) = settings.bitcoin_rpc_client(None) {
+    let headers = RpcHeaderSource(&client);
+    return Ok(verify(Some(&headers)).unwrap_or_else(|err| {
+      lord_commit::AttestationVerifyStatusJson::Unavailable {
+        reason: err.to_string(),
+      }
+    }));
+  }
+  Ok(verify(None).unwrap_or_else(
+    |err| lord_commit::AttestationVerifyStatusJson::Unavailable {
+      reason: err.to_string(),
+    },
+  ))
 }
 
 fn parse_bao_root_hex(hex_str: &str) -> ServerResult<[u8; 32]> {

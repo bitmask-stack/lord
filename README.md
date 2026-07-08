@@ -11,6 +11,28 @@
 
 ---
 
+## Monorepo layout
+
+Lord is developed alongside sibling crates under `surmount/`:
+
+```
+surmount/
+├── lord/          # this repository (CLI, server, lord-storage, lord-commit, …)
+├── carbonado/     # Carbonado v2 encode/decode (path dep from lord-storage)
+└── bao-tree/      # Bao stream verification (path dep from lord-storage)
+```
+
+Clone all three before building. `just deps-check` **fails fast** (exit 1) when either sibling is missing — it does not warn and continue.
+
+`lord-storage` depends on `bao-tree` via a path dependency. Carbonado also pulls `bao-tree` from git; [`.cargo/config.toml`](.cargo/config.toml) patches that git URL to the same sibling checkout so the workspace resolves one `bao-tree` revision:
+
+```toml
+[patch."https://github.com/SurmountSystems/bao-tree.git"]
+bao-tree = { path = "../bao-tree" }
+```
+
+---
+
 ## What Lord is
 
 **Lord** keeps what operators rely on from ord — CLI shape, HTTP explorer API, Bitcoin Core wallet integration, cardinal indexing — and **removes inscription and rune functionality entirely**.
@@ -24,7 +46,8 @@ In their place, Lord is building a **content-addressed commitment stack**: durab
 | Sat ordinal ordering | OTS merkle-path + breadth-first commitment order |
 
 **[Design document](docs/src/lord/design.md)** — full specification and roadmap.  
-**[Implementation notes](docs/src/lord/implementation.md)** — what is shipped today, schemas, and CLI details.
+**[Implementation notes](docs/src/lord/implementation.md)** — what is shipped today, schemas, and CLI details.  
+**[CHIP LTP-0001 (draft)](docs/src/lord/chip-ltp-0001.md)** — Lord Transport Protocol (Iroh, storage market, payments annex).
 
 ---
 
@@ -58,13 +81,26 @@ These are intentional — not oversights:
 | PR1 | Remove inscriptions/runes; index+wallet heed3; slim server; `sats` feature | Done |
 | PR2 | Carbonado encode/verify, filepack, `storage/` metadata | Done |
 | PR3 | OTS timestamp/verify/list, breccia log, commitment explorer | Done |
+| Operator stack | Embedded Rust calendar, `commit upgrade`, Bitcoin attestation verify, txindex fallback, operator docs | Shipped |
 | PR4 | LDK Lightning | Planned |
 | PR5 | Iroh P2P / storage market | Planned |
 | PR6 | RGB stub | Planned |
 
-**Shipped today:** wallet, cardinal explorer, Carbonado storage CLI, filepack create, OTS commitment workflow, `/commitment/*` and `/content/*` routes.
+**Shipped today:** wallet, cardinal explorer (with txindex fallback), Carbonado storage CLI, filepack create/verify, OTS commitment workflow (`timestamp` / `upgrade` / `verify` with Bitcoin attestation + confirmations), embedded chain-aware OpenTimestamps calendar (`lord calendar *`, `calendar_enabled` in `lord server`), `/commitment/*` and `/content/*` routes (Bao decode).
 
-**Not shipped:** storage market, Lightning, RGB, full OTS Bitcoin attestation verify (PR3 checks digest binding), Bao streaming decode on `/content` (serves raw carbonado bytes).
+**Not shipped:** storage market, Lightning, RGB, multi-calendar federation, breccia replication.
+
+---
+
+## Chains (mainnet first)
+
+| Chain | Lord flag | Data directory | Notes |
+|-------|-----------|----------------|-------|
+| **Mainnet** | _(default)_ | `{data_dir}/` | Production; embedded calendar optional |
+| Signet | `--signet` | `{data_dir}/signet/` | Public test network |
+| Testnet3 | `--testnet` | `{data_dir}/testnet3/` | Legacy public testnet |
+| Testnet4 | `--testnet4` | `{data_dir}/testnet4/` | Current public testnet |
+| Regtest | `--regtest` | `{data_dir}/regtest/` | Local dev; dry-run OTS without calendar |
 
 ---
 
@@ -73,8 +109,12 @@ These are intentional — not oversights:
 ### Build
 
 ```sh
-git clone https://github.com/bitmask-stack/lord.git
-cd lord
+# Monorepo checkout (recommended)
+git clone https://github.com/bitmask-stack/lord.git surmount/lord
+git clone https://github.com/bitmask-stack/carbonado.git surmount/carbonado
+git clone https://github.com/bitmask-stack/bao-tree.git surmount/bao-tree
+cd surmount/lord
+just deps-check
 cargo build --release
 # binaries: ./target/release/lord  ./target/release/lord-pack
 ```
@@ -85,7 +125,17 @@ Optional sat explorer: `cargo build --release --features sats` and run with `--i
 
 ### Run
 
-Lord needs a synced `bitcoind` with `-txindex`. Same RPC/cookie conventions as ord — see `lord --help`.
+Lord needs a synced `bitcoind` for wallet and explorer modes. Same RPC/cookie conventions as ord — see `lord --help`.
+
+**`txindex` is not required for storage or OTS workflows** (`lord-pack`, `storage`, `commit`). For the block explorer and address/sat indexing, bitcoind's transaction index matters:
+
+| Profile | bitcoind | `txindex=1` | lord server |
+|---------|----------|-------------|-------------|
+| Storage / commitments only | Optional | No | No |
+| Wallet + blocks (reduced) | Yes | No | Yes — blocks and unspent outputs work; `/tx` returns 503 with guidance |
+| Full explorer / `--index-addresses` / `--index-sats` | Yes | **Yes** | Yes |
+
+Lord probes `getindexinfo` at index startup, logs a warning when txindex is missing, and continues in reduced mode. `/status` reports `txindex` and `txindex_available`. Enabling `--index-addresses` or `--index-sats` without a synced txindex fails fast with an actionable error.
 
 ```sh
 lord server                                    # HTTP explorer
@@ -104,6 +154,7 @@ lord storage verify <bao_root_hex> --sample-rate 8
 
 # Directory → per-file Carbonado + manifest
 lord filepack create ./bundle --format c12
+lord filepack verify <fingerprint>
 
 # Casey-compatible CBOR manifest + carbonado sidecar
 lord filepack create ./bundle --format c12 --filepack-compat
@@ -111,9 +162,12 @@ lord filepack create ./bundle --format c12 --filepack-compat
 # Standalone helper (no full lord wallet/index required)
 lord-pack create ./bundle --format c12 --chain regtest --data-dir ~/.local/share/ord/regtest --filepack-compat
 
-# OpenTimestamps
-lord commit timestamp <bao_root_hex>
-lord commit verify <bao_root_hex>
+# OpenTimestamps (embedded calendar: set calendar_enabled: true in lord.yaml)
+lord calendar url
+lord calendar doctor
+lord commit timestamp <bao_root_hex> [--dry-run]
+lord commit upgrade <bao_root_hex>    # after calendar anchors
+lord commit verify <bao_root_hex> [--digest-only] [--full]
 lord commit list
 ```
 
@@ -133,17 +187,18 @@ Mainnet uses `{data_dir}/` at the root; other chains nest under `{data_dir}/{cha
 | `wallets/<name>/` | Per-wallet LMDB (schema **2**) |
 | `carbonado/` | Carbonado blobs `{bao_root_hex}.c{NN}` |
 | `filepack/{fingerprint}/` | `manifest.filepack` + optional `lord.carbonado.cbor` |
-| `storage/` | Commitment metadata LMDB (schema **3**), `master.key` |
+| `storage/` | Commitment metadata LMDB (schema **4**), `master.key` |
 | `ots/` | Detached `.ots` proofs |
 | `breccia/global.breccia` | Global commitment append log |
+| `{chain}/calendar/` | Embedded OTS calendar state (`state.json`, active `uri`) |
 
-Example config: [`lord.yaml`](lord.yaml).
+Example config: [`lord.yaml`](lord.yaml) (preferred; `ord.yaml` still supported). Operator guides: [commitments](docs/src/guides/commitments.md), [operator](docs/src/guides/operator.md). Signet acceptance: [`docs/ACCEPTANCE-SIGNET.md`](docs/ACCEPTANCE-SIGNET.md). Release: [`docs/RELEASE.md`](docs/RELEASE.md).
 
 ---
 
 ## Scope today
 
-**Included:** wallet commands, block/tx/output/address explorer, search, status, Carbonado storage, filepack, OTS commitments, commitment explorer pages.
+**Included:** wallet commands, block/tx/output/address explorer, search, status, Carbonado storage, filepack, OTS commitments (embedded calendar), commitment explorer pages with attestation status.
 
 **Removed:** inscriptions, runes, ordinal collection features, inscription/rune HTTP routes (410 Gone).
 
@@ -175,7 +230,12 @@ Upstream ord docs, install scripts, and community channels refer to **ordinals.c
 Tests are required for new logic. With [just](https://github.com/casey/just) installed:
 
 ```sh
-just ci    # fmt, clippy, full test suite
+just deps-check   # verify carbonado + bao-tree siblings
+just smoke        # fast integration smoke (calendar + commit dry-run)
+just ci-local     # deps-check → smoke → clippy → forbid → fmt → test-all
+just ci           # fmt, clippy, full test suite (includes smoke)
+just ceremony                    # regtest encode + dry-run timestamp + --full verify
+just ceremony signet             # signet encode + live-step instructions (see ACCEPTANCE-SIGNET.md)
 ```
 
 Integration tests use the in-repo [`mockcore`](crates/mockcore) Bitcoin Core mock. See the [justfile](justfile) for more recipes.

@@ -449,6 +449,46 @@ fn collect_package_files(
   Ok(files)
 }
 
+/// Derive the Casey `package1…` fingerprint from archive bytes.
+pub fn casey_archive_fingerprint(cbor: &[u8]) -> Result<String> {
+  let archive: Archive = minicbor::decode(cbor).context("decode filepack archive")?;
+  fingerprint_for_archive(&archive)
+}
+
+/// Ensure Casey package paths match the Lord carbonado sidecar bindings.
+///
+/// Compat verify cross-checks **path sets only**: each Casey `package_files` entry
+/// must have a sidecar binding at the same path (and vice versa). It does **not**
+/// compare Casey source `hash` / `size` against the sidecar or LMDB — Carbonado
+/// bindings carry `bao_root`, `format`, and `carbonado_path` only. Source-file
+/// integrity is enforced by the Casey archive structure and LMDB `filepack_fp` /
+/// commitment metadata checks during `verify_filepack`.
+pub fn ensure_casey_bindings_match_sidecar(
+  package_files: &[CaseyPackageFile],
+  bindings: &BTreeMap<String, CarbonadoBinding>,
+) -> Result<()> {
+  ensure!(
+    package_files.len() == bindings.len(),
+    "archive lists {} package files but sidecar has {}",
+    package_files.len(),
+    bindings.len()
+  );
+  for file in package_files {
+    ensure!(
+      bindings.contains_key(&file.path),
+      "sidecar missing binding for archive path `{}`",
+      file.path
+    );
+  }
+  for path in bindings.keys() {
+    ensure!(
+      package_files.iter().any(|file| file.path == *path),
+      "archive missing package file for sidecar path `{path}`"
+    );
+  }
+  Ok(())
+}
+
 fn fingerprint_for_archive(archive: &Archive) -> Result<String> {
   let root_directory: Directory = minicbor::decode(
     archive

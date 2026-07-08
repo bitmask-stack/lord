@@ -146,6 +146,8 @@ pub struct CommitmentInfo {
   pub ots_order_key: Option<String>,
   pub timestamped_at: Option<u64>,
   pub timestamped: bool,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub ots_attestation: Option<lord_commit::AttestationVerifyStatusJson>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 
@@ -277,6 +277,137 @@ fn temp_path(path: &Path) -> PathBuf {
     .map(|name| name.to_string_lossy().into_owned())
     .unwrap_or_else(|| "data".into());
   parent.join(format!(".{file_name}.tmp"))
+}
+
+/// Options for `verify_filepack`.
+#[derive(Debug, Clone, Default)]
+pub struct VerifyFilepackOptions {
+  /// When true, require and verify a Casey CBOR `manifest.filepack` archive.
+  pub filepack_compat: bool,
+}
+
+/// Result of verifying a Lord filepack manifest.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerifyFilepackResult {
+  pub fingerprint: String,
+  pub version: u32,
+  pub entries: usize,
+  pub valid: bool,
+}
+
+/// Verify a Lord filepack manifest and LMDB metadata bindings.
+pub fn verify_filepack(
+  data_dir: impl AsRef<Path>,
+  fingerprint: &str,
+  options: VerifyFilepackOptions,
+) -> Result<VerifyFilepackResult> {
+  let paths = StoragePaths::new(data_dir.as_ref());
+  let filepack_root = paths.filepack_dir().join(fingerprint);
+  let manifest_path = filepack_root.join("manifest.filepack");
+  let bytes = std::fs::read(&manifest_path)
+    .with_context(|| format!("failed to read `{}`", manifest_path.display()))?;
+
+  let manifest = if bytes.first() == Some(&b'{') {
+    if options.filepack_compat {
+      bail!("`--filepack-compat` requires a Casey CBOR manifest, found JSON");
+    }
+    let manifest: FilepackManifest = serde_json::from_slice(&bytes).context("parse manifest")?;
+    ensure_manifest_fingerprint(&manifest, fingerprint)?;
+    manifest
+  } else {
+    if !options.filepack_compat {
+      bail!("manifest is CBOR; pass `--filepack-compat` to verify Casey archives");
+    }
+    let package_files = crate::filepack_cbor::verify_casey_archive(&bytes)
+      .context("casey archive verification failed")?;
+    let archive_fp = crate::filepack_cbor::casey_archive_fingerprint(&bytes)
+      .context("failed to derive Casey archive fingerprint")?;
+    ensure!(
+      archive_fp == fingerprint,
+      "archive fingerprint `{archive_fp}` does not match `{fingerprint}`"
+    );
+    let sidecar = crate::filepack_cbor::read_carbonado_sidecar(&filepack_root)?;
+    let bindings = crate::filepack_cbor::decode_carbonado_sidecar(&sidecar)?;
+    crate::filepack_cbor::ensure_casey_bindings_match_sidecar(&package_files, &bindings)?;
+    manifest_from_compat_bindings(fingerprint, bindings)?
+  };
+
+  let store = StorageStore::open(paths.data_dir())?;
+  let rtxn = store.begin_read()?;
+  for entry in &manifest.entries {
+    let bao_root_bytes = hex::decode(&entry.bao_root).context("invalid entry bao root")?;
+    let bao_root: [u8; 32] = bao_root_bytes
+      .as_slice()
+      .try_into()
+      .map_err(|_| anyhow::anyhow!("entry bao root must be 32 bytes"))?;
+    let meta = store
+      .get_commitment(&rtxn, &bao_root)?
+      .with_context(|| format!("missing commitment metadata for {}", entry.bao_root))?;
+    match meta.filepack_fp.as_deref() {
+      Some(fp) if fp == fingerprint => {}
+      Some(fp) => {
+        bail!(
+          "commitment {} is bound to filepack `{fp}`, not `{fingerprint}`",
+          entry.bao_root
+        );
+      }
+      None => {
+        bail!(
+          "commitment {} is not bound to filepack `{fingerprint}`",
+          entry.bao_root
+        );
+      }
+    }
+    ensure!(
+      meta.format == entry.format,
+      "format mismatch for {}",
+      entry.path
+    );
+  }
+
+  Ok(VerifyFilepackResult {
+    fingerprint: fingerprint.into(),
+    version: manifest.version,
+    entries: manifest.entries.len(),
+    valid: true,
+  })
+}
+
+fn ensure_manifest_fingerprint(manifest: &FilepackManifest, fingerprint: &str) -> Result<()> {
+  ensure!(
+    manifest.fingerprint == fingerprint,
+    "manifest fingerprint `{}` does not match `{}`",
+    manifest.fingerprint,
+    fingerprint
+  );
+  let computed = fingerprint_for_entries(&manifest.entries);
+  ensure!(
+    computed == fingerprint,
+    "manifest entry fingerprint mismatch (computed `{computed}`)"
+  );
+  Ok(())
+}
+
+fn manifest_from_compat_bindings(
+  fingerprint: &str,
+  bindings: std::collections::BTreeMap<String, crate::filepack_cbor::CarbonadoBinding>,
+) -> Result<FilepackManifest> {
+  let mut entries: Vec<FilepackEntry> = bindings
+    .into_iter()
+    .map(|(path, binding)| FilepackEntry {
+      path,
+      size: 0,
+      bao_root: binding.bao_root,
+      format: binding.format,
+    })
+    .collect();
+  entries.sort_by(|a, b| a.path.cmp(&b.path));
+  Ok(FilepackManifest {
+    version: 2,
+    fingerprint: fingerprint.into(),
+    root: ".".into(),
+    entries,
+  })
 }
 
 fn fingerprint_for_entries(entries: &[FilepackEntry]) -> String {
@@ -618,5 +749,215 @@ mod tests {
       .join("manifest.filepack");
     assert!(manifest_path.exists());
     assert!(!manifest_path.with_extension("tmp").exists());
+  }
+
+  #[test]
+  fn verify_filepack_json_roundtrip() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let pack = dir.path().join("bundle");
+    std::fs::create_dir_all(&pack).expect("mkdir");
+    std::fs::write(pack.join("one.txt"), b"one").expect("write");
+
+    let manifest = create_filepack(
+      dir.path(),
+      &pack,
+      CreateFilepackOptions {
+        format: 12,
+        layout: Layout::Inboard,
+        master_key_hex: None,
+        filepack_compat: false,
+      },
+    )
+    .expect("create");
+
+    let verified = verify_filepack(
+      dir.path(),
+      &manifest.fingerprint,
+      VerifyFilepackOptions::default(),
+    )
+    .expect("verify");
+    assert!(verified.valid);
+    assert_eq!(verified.entries, 1);
+    assert_eq!(verified.version, 1);
+  }
+
+  #[test]
+  fn verify_filepack_rejects_fingerprint_mismatch() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let pack = dir.path().join("bundle");
+    std::fs::create_dir_all(&pack).expect("mkdir");
+    std::fs::write(pack.join("one.txt"), b"one").expect("write");
+
+    create_filepack(
+      dir.path(),
+      &pack,
+      CreateFilepackOptions {
+        format: 12,
+        layout: Layout::Inboard,
+        master_key_hex: None,
+        filepack_compat: false,
+      },
+    )
+    .expect("create");
+
+    let wrong = "11".repeat(32);
+    let err = verify_filepack(dir.path(), &wrong, VerifyFilepackOptions::default())
+      .expect_err("fingerprint");
+    assert!(err.to_string().contains("failed to read"));
+  }
+
+  #[test]
+  fn verify_filepack_rejects_tampered_manifest_fingerprint_field() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let pack = dir.path().join("bundle");
+    std::fs::create_dir_all(&pack).expect("mkdir");
+    std::fs::write(pack.join("one.txt"), b"one").expect("write");
+
+    let manifest = create_filepack(
+      dir.path(),
+      &pack,
+      CreateFilepackOptions {
+        format: 12,
+        layout: Layout::Inboard,
+        master_key_hex: None,
+        filepack_compat: false,
+      },
+    )
+    .expect("create");
+
+    let manifest_path = dir
+      .path()
+      .join("filepack")
+      .join(&manifest.fingerprint)
+      .join("manifest.filepack");
+    let mut on_disk: FilepackManifest =
+      serde_json::from_slice(&std::fs::read(&manifest_path).expect("read")).expect("parse");
+    on_disk.fingerprint = "22".repeat(32);
+    std::fs::write(
+      &manifest_path,
+      serde_json::to_vec_pretty(&on_disk).expect("serialize"),
+    )
+    .expect("write");
+
+    let err = verify_filepack(
+      dir.path(),
+      &manifest.fingerprint,
+      VerifyFilepackOptions::default(),
+    )
+    .expect_err("tampered fingerprint");
+    assert!(err.to_string().contains("does not match"));
+  }
+
+  #[test]
+  fn verify_filepack_rejects_cbor_without_compat_flag() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let pack = dir.path().join("bundle");
+    std::fs::create_dir_all(&pack).expect("mkdir");
+    std::fs::write(pack.join("one.txt"), b"one").expect("write");
+
+    let manifest = create_filepack(
+      dir.path(),
+      &pack,
+      CreateFilepackOptions {
+        format: 12,
+        layout: Layout::Inboard,
+        master_key_hex: None,
+        filepack_compat: true,
+      },
+    )
+    .expect("create");
+
+    let err = verify_filepack(
+      dir.path(),
+      &manifest.fingerprint,
+      VerifyFilepackOptions::default(),
+    )
+    .expect_err("compat required");
+    assert!(err.to_string().contains("--filepack-compat"));
+  }
+
+  #[test]
+  fn verify_filepack_rejects_unbound_commitment() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let pack = dir.path().join("bundle");
+    std::fs::create_dir_all(&pack).expect("mkdir");
+    std::fs::write(pack.join("one.txt"), b"one").expect("write");
+
+    let manifest = create_filepack(
+      dir.path(),
+      &pack,
+      CreateFilepackOptions {
+        format: 12,
+        layout: Layout::Inboard,
+        master_key_hex: None,
+        filepack_compat: false,
+      },
+    )
+    .expect("create");
+
+    let store = StorageStore::open(dir.path()).expect("open");
+    let mut wtxn = store.begin_write().expect("write");
+    let root = hex::decode(&manifest.entries[0].bao_root).expect("hex");
+    let root: [u8; 32] = root.try_into().expect("root");
+    let mut meta = store
+      .get_commitment(&wtxn, &root)
+      .expect("get")
+      .expect("meta");
+    meta.filepack_fp = None;
+    store.put_commitment(&mut wtxn, &meta).expect("put");
+    wtxn.commit().expect("commit");
+    drop(store);
+
+    let err = verify_filepack(
+      dir.path(),
+      &manifest.fingerprint,
+      VerifyFilepackOptions::default(),
+    )
+    .expect_err("unbound");
+    let err_msg = err.to_string();
+    assert!(
+      err_msg.contains("not bound to filepack"),
+      "unexpected error: {err_msg}"
+    );
+  }
+
+  #[test]
+  fn verify_filepack_rejects_unknown_fingerprint() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let missing = "00".repeat(32);
+    let err =
+      verify_filepack(dir.path(), &missing, VerifyFilepackOptions::default()).expect_err("missing");
+    assert!(err.to_string().contains("failed to read"));
+  }
+
+  #[test]
+  fn verify_filepack_compat_roundtrip() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let pack = dir.path().join("bundle");
+    std::fs::create_dir_all(&pack).expect("mkdir");
+    std::fs::write(pack.join("one.txt"), b"one").expect("write");
+
+    let manifest = create_filepack(
+      dir.path(),
+      &pack,
+      CreateFilepackOptions {
+        format: 12,
+        layout: Layout::Inboard,
+        master_key_hex: None,
+        filepack_compat: true,
+      },
+    )
+    .expect("create");
+
+    let verified = verify_filepack(
+      dir.path(),
+      &manifest.fingerprint,
+      VerifyFilepackOptions {
+        filepack_compat: true,
+      },
+    )
+    .expect("verify");
+    assert!(verified.valid);
+    assert_eq!(verified.version, 2);
   }
 }

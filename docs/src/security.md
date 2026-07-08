@@ -1,16 +1,38 @@
 Security
 ========
 
-Anyone can publish inscriptions, including arbitrary HTML, which `ord server`
-will serve at `/content/<INSCRIPTION_ID>`,
-`/r/undelegated-content/<INSCRIPTION_ID>`, and
-`/r/sat/<SAT_NUMBER>/at/<INDEX>/content`.
+### Lord commitment content (`/content/{bao_root}`)
 
-This creates potential security vulnerabilities, including cross-site scripting
+Lord serves **decoded Carbonado commitment plaintext** at `/content/{bao_root}`
+for **public** (even-format) commitments. Private commitments return **403
+Forbidden** until authentication is implemented.
+
+- **Content-Type** is inferred from decoded payload magic bytes (PNG, JPEG, WebP,
+  GIF, PDF) or UTF-8 text fallback (`text/plain; charset=utf-8`); otherwise
+  `application/octet-stream`.
+- Responses include **`X-Content-Type-Options: nosniff`** to discourage MIME
+  sniffing in browsers.
+- Valid UTF-8 HTML served as `text/plain` is not rendered as HTML by modern
+  browsers, but operators should still avoid hosting `lord server` on the same
+  origin as privileged web apps (see cross-site scripting below).
+
+Decoded payload size is capped at **32 MiB**; on-disk carbonado blobs are capped
+before read at roughly **2× decoded + header** to limit memory exhaustion.
+
+### Ord inscription content (removed in Lord)
+
+Anyone could publish inscriptions, including arbitrary HTML, which `ord server`
+served at `/content/<INSCRIPTION_ID>`,
+`/r/undelegated-content/<INSCRIPTION_ID>`, and
+`/r/sat/<SAT_NUMBER>/at/<INDEX>/content`. **Lord returns 410 Gone** for
+inscription content routes.
+
+This created potential security vulnerabilities, including cross-site scripting
 and spoofing attacks.
 
 Without mitigations, a domain hosting an `ord server` explorer instance should
-be considered to be completely untrusted.
+be considered to be completely untrusted. The same-origin guidance applies to
+**Lord** explorer deployments that serve commitment content.
 
 ### Cross-site Scripting
 

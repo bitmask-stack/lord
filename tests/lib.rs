@@ -34,7 +34,7 @@ use {
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -80,6 +80,7 @@ mod removed_commands;
 mod removed_routes;
 mod server;
 mod settings;
+mod smoke;
 mod storage;
 #[cfg(feature = "sats")]
 mod subsidy;
@@ -87,6 +88,7 @@ mod subsidy;
 mod supply;
 #[cfg(feature = "sats")]
 mod traits;
+mod txindex;
 mod verify;
 mod version;
 mod wallet;
